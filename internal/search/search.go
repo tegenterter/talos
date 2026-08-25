@@ -5,10 +5,19 @@
 // search and check extensions (quiescence.go, negamax.go), null-move
 // pruning, principal variation search, late move reductions (negamax.go),
 // mate distance pruning, quiescence delta pruning (quiescence.go), and
-// aspiration windows (search.go's aspirationSearch). It intentionally
-// leaves out the deeper end of Stockfish's own technique list — futility
-// pruning, singular extensions — to keep this a manageable,
-// well-understood implementation.
+// aspiration windows (aspirationSearch below).
+//
+// Known gaps, deliberate rather than overlooked, roughly in the order they
+// are worth closing: LMR reduces by a flat 1-2 plies instead of scaling
+// with log(depth)*log(moveIndex); history has no malus for quiet moves that
+// were searched and failed to cut off, so it discriminates "ever cut off"
+// more than "cuts off often"; null-move reduction is a flat constant with
+// no verification search; check extensions are unconditional; and futility
+// pruning, late move pruning, internal iterative reduction, singular
+// extensions and continuation history are all absent. Raw speed is the
+// larger lever than any of these — nnue.Evaluate is over half of all CPU
+// because it rebuilds both accumulators per call — but that work belongs in
+// internal/nnue rather than here.
 //
 // Options.Threads > 1 splits the search tree across goroutines, following
 // the Young Brothers Wait Concept: a node searches its first move to
@@ -89,7 +98,13 @@ type Options struct {
 	Threads int
 	// HashMB approximately sizes the shared transposition table in
 	// megabytes (see tt.go). Zero or negative means DefaultHashMB.
+	// Ignored when Table is set, since that table is already allocated.
 	HashMB int
+	// Table, if set, is a transposition table reused across Search calls
+	// (see Table's doc comment for why that matters). Nil means allocate a
+	// throwaway table sized by HashMB for this search alone, which is the
+	// right default for one-off searches and tests.
+	Table *Table
 	// MaxDepth, if positive, bounds iterative deepening to that many plies
 	// (UCI's "go depth"). It composes with the other limits: the search
 	// stops at whichever bound is hit first. If MaxDepth is the *only*
@@ -97,6 +112,18 @@ type Options struct {
 	// with no time cap until that depth completes — like Infinite, but
 	// bounded by depth instead of by Context cancellation.
 	MaxDepth int
+	// GameHistory holds the Zobrist hashes (board.Board.Hash()) of the
+	// positions that occurred in the actual game before root, in order,
+	// most recent last. It excludes root itself, which the search records
+	// on its own path. Supplying it lets the search see that a line repeats
+	// a position the game has already visited; without it, only repetitions
+	// occurring wholly inside the search are detected, and the engine will
+	// cheerfully repeat its way into a draw it never saw coming.
+	//
+	// Callers may pass the whole game; Search trims it to the span that can
+	// actually repeat. The slice is not modified, and is only read during
+	// the search.
+	GameHistory []uint64
 	// Tablebase, if set, is probed for WDL (win/draw/loss) knowledge at
 	// every non-root node reached during search — see negamax.go. Nil
 	// means no tablebase probing, regardless of what's loaded into it
@@ -111,6 +138,55 @@ const DefaultMaxTime = 1 * time.Second
 // DefaultInfoInterval is used when Options.OnInfo is set but
 // Options.InfoInterval is zero.
 const DefaultInfoInterval = 200 * time.Millisecond
+
+// Soft-limit tuning. An iterative-deepening iteration that gets aborted is
+// discarded wholesale, so every millisecond spent past the last *completed*
+// depth returns the same move it already had. This constant decides when not
+// to begin another one.
+//
+// iterationGrowthFactor estimates the next iteration's cost as a multiple of
+// the one just finished, which is what makes the decision adaptive: a fixed
+// "stop after X% of the budget" rule can't tell a position whose iterations
+// are still cheap from one whose iterations have started doubling, and in
+// practice it lets a search begin a depth it has no chance of finishing just
+// because the clock hadn't quite crossed the threshold.
+//
+// Measured on this engine (startpos, kiwipete and the Italian, depths 1-11,
+// single-threaded), successive iterations cost 2.0-3.3x the previous one,
+// and the ratio runs highest exactly where it matters most — the deep,
+// expensive iterations near the end of a search. Startpos depth 10 cost 4.9x
+// depth 9. The value below sits at the upper end of that range rather than
+// the median on purpose, because the two failure directions are not
+// symmetric: predicting too low starts a doomed iteration and throws away
+// everything spent on it (up to half the move's budget), while predicting too
+// high only forfeits the occasional ply that would just barely have landed.
+//
+// There is deliberately NO additional "stop once X% of the budget is gone"
+// rule alongside this prediction, though that is the more obvious way to
+// write a soft limit. It was tried and cost about 230 Elo in self-play at a
+// real time control: the time budget from internal/uci is already the
+// engine's *intended* spend for the move, so refusing to search past half of
+// it simply halves the thinking time, and the surplus is not handed back fast
+// enough by the next move's allocation to make up for it. Skipping an
+// iteration that is merely unlikely to finish is a real cost; skipping one
+// that provably cannot finish is free, and only the latter is done here.
+const iterationGrowthFactor = 2.5
+
+// repeatableHistory trims a game's position hashes to the suffix that can
+// still repeat: only the moves since the last irreversible one (a capture or
+// pawn move, which is exactly what resets the halfmove clock). Anything
+// before that boundary is unreachable by definition, so scanning it at every
+// node would be wasted work. halfmoveClock is the root's, so it counts the
+// plies back to that boundary.
+func repeatableHistory(history []uint64, halfmoveClock int) []uint64 {
+	if halfmoveClock <= 0 || len(history) == 0 {
+		return nil
+	}
+	if halfmoveClock < len(history) {
+		return history[len(history)-halfmoveClock:]
+	}
+	return history
+}
 
 // Search picks a move for root via iterative-deepening alpha-beta,
 // returning the deepest completed iteration's best move (across however
@@ -135,7 +211,11 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 	if threads <= 0 {
 		threads = 1
 	}
-	tt := newTranspositionTable(opts.HashMB)
+	// A caller-supplied table is reused as-is (and kept warm between moves);
+	// otherwise this search gets a throwaway one. Allocating only in the
+	// nil case matters: at Hash 1024 an unnecessary allocation here would
+	// cost a gigabyte per search.
+	tt := opts.Table.table(opts.HashMB)
 
 	maxDepth := opts.MaxDepth
 	if maxDepth <= 0 || maxDepth > maxPly {
@@ -159,6 +239,12 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 	start := time.Now()
 	var nodes atomic.Int64
 
+	// timeLimited is "this search is bounded by a clock", the only mode in
+	// which the soft limit below applies: Infinite and a bare "go depth N"
+	// have no deadline at all, and a node-limited search is bounded by work
+	// rather than time.
+	timeLimited := !opts.Infinite && !depthOnly && opts.MaxIterations <= 0
+
 	// Everything the threads share, built once. Each thread then carries
 	// only its own move-ordering heuristics and search path (see thread).
 	sc := &searchCtx{
@@ -170,6 +256,7 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 		nodeLimit:     int64(opts.MaxIterations),
 		deadline:      start.Add(maxTime),
 		tablebase:     opts.Tablebase,
+		gameHistory:   repeatableHistory(opts.GameHistory, root.HalfmoveClock),
 		splitMinDepth: splitMinDepth,
 	}
 
@@ -214,9 +301,40 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 	var best result
 	var prevScore int
 	haveScore := false
+	// How long the most recently completed iteration took, used to predict
+	// the next one's cost for the soft limit below.
+	var lastIteration time.Duration
 
 	for depth := 1; depth <= maxDepth; depth++ {
+		// Soft limit: don't *start* an iteration there isn't realistically
+		// time to finish, since an aborted one is discarded and its time
+		// buys nothing. Stopping here returns the same move sooner and banks
+		// the remainder for later moves in the game; the hard deadline still
+		// governs aborting an iteration already under way.
+		if timeLimited && depth > 1 {
+			elapsed := time.Since(start)
+			predicted := time.Duration(float64(lastIteration) * iterationGrowthFactor)
+			if elapsed+predicted > maxTime {
+				break
+			}
+		}
+
+		iterationStart := time.Now()
+
+		// Every thread's history is decayed, not just the driver's. Helpers
+		// accumulate history for the whole search, so decaying only this
+		// thread let theirs grow without bound — and decayHistory's halving
+		// is precisely what keeps a history score below the killer and
+		// good-capture ordering bands, so an undecayed helper would
+		// eventually order stale quiets above both. Safe to touch helper
+		// state here for the same reason mergeSelDepth is safe below: every
+		// split waits for the helpers it spawned before its node returns, so
+		// the previous iteration's root having returned means none are still
+		// running.
 		t.decayHistory()
+		for _, h := range helpers {
+			h.decayHistory()
+		}
 		var pv []board.Move
 		score := t.aspirationSearch(&root, depth, prevScore, haveScore, &pv)
 		if t.aborted {
@@ -224,6 +342,7 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 		}
 		best = result{score: score, depth: depth, selDepth: t.selDepth, pv: pv}
 		prevScore, haveScore = score, true
+		lastIteration = time.Since(iterationStart)
 
 		if opts.OnInfo != nil && time.Since(lastInfo) >= infoInterval {
 			opts.OnInfo(buildInfo(best.depth, best.selDepth, best.score, int(nodes.Load()), time.Since(start), best.pv))

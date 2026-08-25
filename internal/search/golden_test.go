@@ -83,7 +83,16 @@ func TestSearchIsDeterministic(t *testing.T) {
 // TestSearchMatchesGoldenBaselines pins the search's exact output. See the
 // file comment for what to do when it fails.
 func TestSearchMatchesGoldenBaselines(t *testing.T) {
-	// Recorded at goldenDepth, Threads: 1. Last re-recorded when quiescence
+	// Recorded at goldenDepth, Threads: 1. Last re-recorded when promotions
+	// got their own move-ordering band and history gained a hard clamp
+	// (ordering.go): only kiwipete moved, and only its node count and PV
+	// tail — its score and root move are unchanged. Kiwipete has a black
+	// pawn on h3 that can promote within depth 6, so it is the one golden
+	// position the promotion band actually reorders. The PV came back one
+	// move shorter because PV reconstruction truncates at a transposition
+	// -table cutoff (negamax.go returns a single-move PV there), so its
+	// length tracks where TT hits land rather than the true line length;
+	// reordering moved one such hit. Before that, re-recorded when quiescence
 	// delta pruning's margin became material-phase-scaled (deltaPruningMarginMin/
 	// Max in quiescence.go) instead of a flat 800: node counts dropped in
 	// the three dense-middlegame positions (startpos/kiwipete/italian, all
@@ -119,7 +128,7 @@ func TestSearchMatchesGoldenBaselines(t *testing.T) {
 		pv                    string
 	}{
 		"startpos":     {20110, 6, 45, "e2e4 c7c5 g1f3 b8c6 d2d4"},
-		"kiwipete":     {68749, 6, -196, "e2a6 b4c3 d2c3 e6d5 e4d5 f6d5"},
+		"kiwipete":     {68455, 6, -196, "e2a6 b4c3 d2c3 e6d5 e4d5"},
 		"italian":      {29522, 6, -58, "g8f6 d2d4 e5d4 e1g1 f8c5 e4e5"},
 		"pawn-endgame": {9200, 6, 704, "b4f4 h4g3 f4c4 h5c5"},
 		"rook-endgame": {21500, 6, 1606, "e1e2 e8d7 a1a3 d7d6 a3g3"},

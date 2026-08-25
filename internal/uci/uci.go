@@ -31,12 +31,25 @@ func run(in io.Reader, rawOut io.Writer) {
 	out := &syncWriter{w: rawOut}
 
 	b := board.StartingBoard()
+	// Hashes of the positions preceding b in the game, rebuilt by each
+	// "position" command (see parsePosition) and handed to the search so it
+	// can recognize repeating a position the game has already seen.
+	var gameHistory []uint64
 
 	// Configurable via "setoption" (see the "setoption" case below); read
 	// only by this loop's own goroutine when building the next "go"'s
 	// search.Options, so no synchronization is needed for these two.
 	threads := 1
 	hashMB := search.DefaultHashMB
+	// The transposition table lives across moves rather than being rebuilt
+	// per "go" — see search.Table. Allocated on first use so an engine that
+	// is only queried (e.g. "uci" then "quit", as GUIs do when enumerating
+	// engines) never pays for it, reallocated when "Hash" changes, and
+	// cleared on "ucinewgame". Owned solely by this goroutine; a search
+	// reads it concurrently, but only between the "go" that starts it and
+	// the wg.Wait() that joins it, and every mutation below happens outside
+	// that window.
+	var tt *search.Table
 	// nil means no Syzygy tables are loaded, so "go" leaves
 	// search.Options.Tablebase nil and search runs exactly as it did
 	// before this option existed.
@@ -90,7 +103,15 @@ func run(in io.Reader, rawOut io.Writer) {
 				}
 			case "Hash":
 				if n, err := strconv.Atoi(value); err == nil {
-					hashMB = clampInt(n, minHashMB, maxHashMB)
+					if v := clampInt(n, minHashMB, maxHashMB); v != hashMB {
+						hashMB = v
+						// Drop the old table so the next "go" allocates at
+						// the new size. Dropping rather than resizing in
+						// place keeps this safe even if a search is still
+						// running: it holds its own reference and finishes
+						// against the old table.
+						tt = nil
+					}
 				}
 			case "SyzygyPath":
 				tb = loadTablebase(out, value)
@@ -103,9 +124,14 @@ func run(in io.Reader, rawOut io.Writer) {
 			// has no debug logging, and no registration is required.
 		case "ucinewgame":
 			b = board.StartingBoard()
+			gameHistory = nil
+			// Entries from the previous game are still valid results, but
+			// they'd occupy space that the new game's tree needs; drop the
+			// table so the next "go" starts from a clean one.
+			tt = nil
 		case "position":
-			if nb, ok := parsePosition(fields[1:]); ok {
-				b = nb
+			if nb, nh, ok := parsePosition(out, fields[1:]); ok {
+				b, gameHistory = nb, nh
 			}
 		case "eval":
 			// Non-standard, like Stockfish's own "eval": a human-facing
@@ -113,6 +139,11 @@ func run(in io.Reader, rawOut io.Writer) {
 			// printed as plain text. No GUI sends this, so it can't disturb
 			// the protocol; it's for inspecting what the network thinks.
 			printEval(out, &b)
+		case "bench":
+			// Non-standard, like "eval" above and like Stockfish's own
+			// "bench": a fixed-position, fixed-depth search whose total node
+			// count is a single-number regression signal. See bench.go.
+			RunBench(out)
 		case "go":
 			opts, infinite, ponder, pBudget := buildGoOptions(&b, fields[1:])
 
@@ -137,10 +168,16 @@ func run(in io.Reader, rawOut io.Writer) {
 			ponderBudget = pBudget
 			mu.Unlock()
 
+			if tt == nil {
+				tt = search.NewTable(hashMB)
+			}
+
 			opts.Context = ctx
 			opts.Infinite = infinite || ponder
 			opts.Threads = threads
 			opts.HashMB = hashMB
+			opts.Table = tt
+			opts.GameHistory = gameHistory
 			opts.Tablebase = tb
 
 			boardCopy := b
@@ -216,9 +253,30 @@ func run(in io.Reader, rawOut io.Writer) {
 }
 
 // parsePosition handles "position startpos|fen <fen> [moves ...]".
-func parsePosition(args []string) (board.Board, bool) {
+//
+// A move that can't be parsed, or that doesn't match any legal move in the
+// position reached so far, fails the whole command rather than returning the
+// partially-replayed board. Returning a truncated position would be silently
+// game-losing: the engine would search a position several plies behind the
+// GUI's — quite possibly with the opposite side to move — and answer with a
+// move that is illegal in the real game, which an arbiter scores as a
+// forfeit. Since the caller keeps the previous position when ok is false, a
+// malformed command costs at most one stale search instead.
+//
+// The problem is reported as an "info string" (UCI gives "position" no error
+// response, the same situation loadTablebase handles the same way) rather than
+// swallowed, because the engine rejecting a move the GUI considers legal
+// implies a move-generation bug — exactly the kind of thing that must not fail
+// quietly.
+//
+// It also returns the Zobrist hashes of every position the replay passed
+// through *before* the final one, which becomes search.Options.GameHistory so
+// the search can detect repeating a position the game already visited. GUIs
+// resend the full move list with every "position" command, so this is rebuilt
+// per command and needs no state carried between them.
+func parsePosition(out io.Writer, args []string) (board.Board, []uint64, bool) {
 	if len(args) == 0 {
-		return board.Board{}, false
+		return board.Board{}, nil, false
 	}
 
 	var b board.Board
@@ -235,29 +293,36 @@ func parsePosition(args []string) (board.Board, bool) {
 		}
 		parsed, err := board.ParseFEN(strings.Join(args[1:end], " "))
 		if err != nil {
-			return board.Board{}, false
+			return board.Board{}, nil, false
 		}
 		b = parsed
 		rest = args[end:]
 	default:
-		return board.Board{}, false
+		return board.Board{}, nil, false
 	}
 
+	var history []uint64
 	if len(rest) > 0 && rest[0] == "moves" {
-		for _, moveStr := range rest[1:] {
+		for i, moveStr := range rest[1:] {
 			parsed, ok := board.ParseUCIMove(moveStr)
 			if !ok {
-				break
+				fmt.Fprintf(out, "info string position: ignoring command, cannot parse move %d (%q)\n", i+1, moveStr)
+				return board.Board{}, nil, false
 			}
 			legal, ok := matchLegalMove(&b, parsed)
 			if !ok {
-				break
+				fmt.Fprintf(out, "info string position: ignoring command, move %d (%q) is not legal here\n", i+1, moveStr)
+				return board.Board{}, nil, false
 			}
+			// Recorded before the move is made, so history holds the
+			// positions the game passed through and not the one the search
+			// will start from (which the search puts on its own path).
+			history = append(history, b.Hash())
 			b = board.MakeMove(b, legal)
 		}
 	}
 
-	return b, true
+	return b, history, true
 }
 
 // matchLegalMove finds the legal move in the current position matching m's

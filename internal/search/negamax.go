@@ -25,6 +25,13 @@ type searchCtx struct {
 	nodeLimit   int64
 	deadline    time.Time
 	tablebase   *tablebase.Tablebase
+	// gameHistory holds the Zobrist hashes of positions that occurred in the
+	// actual game before this search's root, most recent last, trimmed to
+	// the span since the last irreversible move (see Options.GameHistory).
+	// Written once before any thread starts and only read afterwards, so
+	// every thread can share it with no synchronization — unlike
+	// thread.pathHashes, which each thread mutates as it walks the tree.
+	gameHistory []uint64
 
 	// stopped is the search-wide "everyone stop now" flag. Every limit that
 	// can end a search (context cancellation, the node budget, the
@@ -205,10 +212,23 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 	// allows a draw claim — claiming a draw is the GUI/arbiter's call,
 	// not a reason for the engine to refuse to produce a move.
 	if ply > 0 {
-		if b.HalfmoveClock >= 100 {
-			return 0
-		}
+		// Note the fifty-move rule is deliberately NOT checked here, but
+		// after the checkmate test below: delivering mate ends the game
+		// immediately, so a mating move on the hundredth halfmove is a win,
+		// not a draw. Repetition needs no such care — a checkmate position
+		// can't recur within a line, since the game would have ended the
+		// first time it was reached.
 		for _, h := range t.pathHashes[:pathLen] {
+			if h == hash {
+				return 0
+			}
+		}
+		// Positions from the game so far count as repetitions too, not just
+		// those reached inside this search. Without this the engine happily
+		// repeats a position it has already been in twice — throwing away a
+		// won game by walking into a threefold draw it cannot see, and
+		// equally failing to steer into one when worse.
+		for _, h := range t.s.gameHistory {
 			if h == hash {
 				return 0
 			}
@@ -271,6 +291,13 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 		if inCheck {
 			return -(mateValue - ply)
 		}
+		return 0
+	}
+
+	// Fifty-move draw, checked here rather than alongside the other draw
+	// tests above so that checkmate — which ends the game outright — takes
+	// precedence over it. Same ply > 0 restriction as those tests.
+	if ply > 0 && b.HalfmoveClock >= 100 {
 		return 0
 	}
 

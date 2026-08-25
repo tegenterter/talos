@@ -80,6 +80,48 @@ func newTranspositionTable(hashMB int) *transpositionTable {
 	return &transpositionTable{shardMask: ttShards - 1, shards: shards}
 }
 
+// Table is a transposition table a caller can keep alive across separate
+// Search calls, passed in via Options.Table.
+//
+// This matters for play strength, not just allocation cost. Successive moves
+// in a game overwhelmingly search overlapping trees — the position after the
+// opponent replies is one this search already examined — so a table rebuilt
+// per move throws away exactly the results the next move would benefit from
+// most, and every search restarts cold. (It also re-allocates the whole table
+// each time, which at Hash 1024 means a gigabyte per move.)
+//
+// Reuse is safe without an aging/generation scheme because store's replacement
+// policy only defers to an existing entry when the *hash matches*: an entry
+// belonging to a different position is always evicted, so stale results can't
+// accumulate and permanently clog the table. Aging would still help
+// (it would let a shallow current-search entry displace a deep stale one on
+// the same key) and is a reasonable later refinement, not a prerequisite.
+// A Table is emptied by discarding it and allocating a new one (what
+// internal/uci does for "ucinewgame" and for a changed "Hash"), rather than by
+// a Clear method. That is deliberately the only way: a search running in the
+// background holds its own reference to the underlying table, so replacing the
+// caller's pointer is race-free, whereas zeroing entries in place would
+// corrupt an in-flight search that the GUI never sent "stop" for.
+type Table struct {
+	tt *transpositionTable
+}
+
+// NewTable allocates a reusable table sized per the "Hash" UCI option, in
+// megabytes. Zero or negative means DefaultHashMB.
+func NewTable(hashMB int) *Table {
+	return &Table{tt: newTranspositionTable(hashMB)}
+}
+
+// table returns the underlying table to search with, allocating a throwaway
+// one sized by hashMB when t is nil. Defined on the pointer receiver so a nil
+// Options.Table needs no special case at the call site.
+func (t *Table) table(hashMB int) *transpositionTable {
+	if t == nil {
+		return newTranspositionTable(hashMB)
+	}
+	return t.tt
+}
+
 func (t *transpositionTable) shardFor(hash uint64) *ttShard {
 	return &t.shards[hash&t.shardMask]
 }

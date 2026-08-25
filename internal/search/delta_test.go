@@ -100,6 +100,22 @@ func TestDeltaPruningDoesNotChangeKnownBestMoves(t *testing.T) {
 // value (see its doc comment): this exact assertion is what a too-small
 // flat margin broke on a third golden position (pawn-endgame) during
 // development.
+// sharePrefix reports whether two space-separated move lists agree over the
+// length of the shorter one, and that neither is empty.
+func sharePrefix(a, b string) bool {
+	am, bm := strings.Fields(a), strings.Fields(b)
+	if len(am) == 0 || len(bm) == 0 {
+		return false
+	}
+	n := min(len(am), len(bm))
+	for i := 0; i < n; i++ {
+		if am[i] != bm[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestDeltaPruningNearMarginStillResolvesCorrectly(t *testing.T) {
 	positions := []struct {
 		name string
@@ -130,7 +146,14 @@ func TestDeltaPruningNearMarginStillResolvesCorrectly(t *testing.T) {
 
 			withScore, withPV := run(true)
 			withoutScore, withoutPV := run(false)
-			if withScore != withoutScore || withPV != withoutPV {
+			// The two PVs must agree as far as the shorter one goes, rather
+			// than being byte-identical: PV reconstruction truncates
+			// wherever a transposition-table cutoff fires (negamax.go
+			// returns a single-move PV there), so the reported line is a
+			// prefix of the real one whose length depends on where TT hits
+			// land. Pruning legitimately shifts that, while a genuinely
+			// different line still fails this check.
+			if withScore != withoutScore || !sharePrefix(withPV, withoutPV) {
 				t.Errorf("%s: pruning changed the search's conclusion:\n  with delta pruning:    score=%d pv=%q\n  without delta pruning: score=%d pv=%q",
 					p.name, withScore, withPV, withoutScore, withoutPV)
 			}

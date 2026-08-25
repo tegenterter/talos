@@ -114,11 +114,22 @@ func (t *thread) orderMoves(b *board.Board, moves []board.Move, ttMove board.Mov
 // them, since a losing trade is usually a worse try than an ordinary
 // quiet move, even an unproven one. It still gets searched, eventually,
 // same as any other legal move — this only affects the order.
+// A non-capturing promotion gets its own band rather than falling through to
+// the history score, where it would be ordered among ordinary quiet moves
+// despite typically being the strongest move on the board. A queen promotion
+// wins roughly a queen outright, so it belongs above even a good capture;
+// underpromotions sit just above quiets instead — almost always inferior to
+// taking a queen, but a knight promotion occasionally forks or mates, so they
+// must stay ahead of the quiet pack rather than being buried. (A promotion
+// that is also a capture is scored by the capture bands below, whose see()
+// already accounts for the promotion — see see.go.)
 const (
 	orderScoreTTMove      = 10_000_000
+	orderScoreQueenPromo  = 2_000_000
 	orderScoreGoodCapture = 1_000_000 // + see(b, m), which is >= 0 here
 	orderScoreKiller1     = 900_000
 	orderScoreKiller2     = 890_000
+	orderScoreMinorPromo  = 880_000
 	orderScoreBadCapture  = -1_000_000 // + see(b, m), which is < 0 here
 )
 
@@ -132,6 +143,12 @@ func (t *thread) moveOrderScore(b *board.Board, m board.Move, ttMove board.Move,
 			return orderScoreGoodCapture + s
 		}
 		return orderScoreBadCapture + s
+	}
+	if m.Promotion == board.Queen {
+		return orderScoreQueenPromo
+	}
+	if m.Promotion != board.NoPiece {
+		return orderScoreMinorPromo + pieceOrderValue[m.Promotion]
 	}
 	if ply < maxPly {
 		if t.killers[ply][0] == m {
@@ -160,8 +177,22 @@ func (t *thread) recordKiller(ply int, m board.Move) {
 // weighted by depth² (a cutoff found deeper in the search — i.e. after
 // surviving more scrutiny — says more about the move's general quality
 // than one found near a leaf).
+// The score bands above assume a history value always stays below every band
+// that outranks a plain quiet move. decayHistory's halving is what makes that
+// true in practice, but "in practice" is not an invariant — it depends on
+// decay running often enough relative to how fast a hot entry grows.
+// maxHistory makes it structural instead: no history score can reach the
+// lowest band above quiets, whatever the search does, so move ordering cannot
+// silently invert. Anchored to orderScoreMinorPromo (not the killer bands)
+// because that is the lowest such band.
+const maxHistory = orderScoreMinorPromo - 1
+
 func (t *thread) recordHistory(color board.Color, m board.Move, depth int) {
-	t.history[color][m.From][m.To] += depth * depth
+	h := &t.history[color][m.From][m.To]
+	*h += depth * depth
+	if *h > maxHistory {
+		*h = maxHistory
+	}
 }
 
 // decayHistory halves every history score. t.history otherwise only grows
