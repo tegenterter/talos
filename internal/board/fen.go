@@ -1,0 +1,111 @@
+package board
+
+import (
+	"fmt"
+	"strconv"
+	"strings"
+)
+
+const StartFEN = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+
+func StartingBoard() Board {
+	b, err := ParseFEN(StartFEN)
+	if err != nil {
+		panic("board: StartFEN must be valid: " + err.Error())
+	}
+	return b
+}
+
+var fenPieces = map[byte]struct {
+	color Color
+	piece PieceType
+}{
+	'P': {White, Pawn}, 'N': {White, Knight}, 'B': {White, Bishop},
+	'R': {White, Rook}, 'Q': {White, Queen}, 'K': {White, King},
+	'p': {Black, Pawn}, 'n': {Black, Knight}, 'b': {Black, Bishop},
+	'r': {Black, Rook}, 'q': {Black, Queen}, 'k': {Black, King},
+}
+
+func ParseFEN(fen string) (Board, error) {
+	fields := strings.Fields(fen)
+	if len(fields) < 4 {
+		return Board{}, fmt.Errorf("invalid FEN %q: expected at least 4 fields", fen)
+	}
+
+	var b Board
+
+	ranks := strings.Split(fields[0], "/")
+	if len(ranks) != 8 {
+		return Board{}, fmt.Errorf("invalid FEN %q: expected 8 ranks", fen)
+	}
+	for i, rankStr := range ranks {
+		rank := 7 - i
+		file := 0
+		for _, ch := range []byte(rankStr) {
+			if ch >= '1' && ch <= '8' {
+				file += int(ch - '0')
+				continue
+			}
+			pc, ok := fenPieces[ch]
+			if !ok {
+				return Board{}, fmt.Errorf("invalid FEN %q: unknown piece %q", fen, ch)
+			}
+			if file > 7 {
+				return Board{}, fmt.Errorf("invalid FEN %q: rank %q overflows", fen, rankStr)
+			}
+			b.Pieces[pc.color][pc.piece] |= sqBit(Square(rank*8 + file))
+			file++
+		}
+	}
+
+	switch fields[1] {
+	case "w":
+		b.SideToMove = White
+	case "b":
+		b.SideToMove = Black
+	default:
+		return Board{}, fmt.Errorf("invalid FEN %q: bad side to move %q", fen, fields[1])
+	}
+
+	if fields[2] != "-" {
+		for _, ch := range []byte(fields[2]) {
+			switch ch {
+			case 'K':
+				b.CastlingRights |= WhiteKingside
+			case 'Q':
+				b.CastlingRights |= WhiteQueenside
+			case 'k':
+				b.CastlingRights |= BlackKingside
+			case 'q':
+				b.CastlingRights |= BlackQueenside
+			default:
+				return Board{}, fmt.Errorf("invalid FEN %q: bad castling rights %q", fen, fields[2])
+			}
+		}
+	}
+
+	if fields[3] == "-" {
+		b.EnPassant = NoSquare
+	} else {
+		sq, ok := ParseSquare(fields[3])
+		if !ok {
+			return Board{}, fmt.Errorf("invalid FEN %q: bad en passant square %q", fen, fields[3])
+		}
+		b.EnPassant = sq
+	}
+
+	b.HalfmoveClock = 0
+	b.FullmoveNumber = 1
+	if len(fields) >= 5 {
+		if n, err := strconv.Atoi(fields[4]); err == nil {
+			b.HalfmoveClock = n
+		}
+	}
+	if len(fields) >= 6 {
+		if n, err := strconv.Atoi(fields[5]); err == nil {
+			b.FullmoveNumber = n
+		}
+	}
+
+	return b, nil
+}

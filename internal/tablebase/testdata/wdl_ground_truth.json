@@ -1,0 +1,772 @@
+[
+  {
+    "material": "KBvK",
+    "fen": "8/8/8/8/1B6/7K/8/7k w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBvK",
+    "fen": "8/8/8/8/4B3/5K2/8/k7 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBvK",
+    "fen": "8/8/8/8/8/8/4k1B1/2K5 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBvK",
+    "fen": "8/3K2k1/7B/8/8/8/8/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBvK",
+    "fen": "8/8/8/1K5k/8/8/2B5/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBvK",
+    "fen": "8/8/2K2B2/8/8/3k4/8/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBvK",
+    "fen": "1B6/3K4/8/8/8/8/4k3/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBvK",
+    "fen": "4k3/8/8/4B3/4K3/8/8/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBvK",
+    "fen": "8/8/K7/8/6k1/8/3B4/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBvK",
+    "fen": "8/2k5/B7/K7/8/8/8/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBvK",
+    "fen": "8/2B5/8/5k2/8/8/8/7K w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBvK",
+    "fen": "8/2K5/8/8/1B6/8/8/2k5 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNvK",
+    "fen": "2k5/8/8/8/8/4K3/3N4/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNvK",
+    "fen": "8/8/2N5/2k5/8/8/K7/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNvK",
+    "fen": "8/8/8/8/8/4k3/8/5KN1 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNvK",
+    "fen": "8/1K6/7k/8/4N3/8/8/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNvK",
+    "fen": "8/8/8/8/3K4/8/5k2/1N6 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNvK",
+    "fen": "7k/8/8/8/8/6KN/8/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNvK",
+    "fen": "8/5k2/1N6/8/8/8/8/6K1 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNvK",
+    "fen": "4k3/8/8/8/8/8/7N/6K1 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNvK",
+    "fen": "k7/3N4/8/8/6K1/8/8/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNvK",
+    "fen": "8/8/8/8/4K2N/8/8/5k2 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNvK",
+    "fen": "6K1/4N3/8/8/6k1/8/8/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNvK",
+    "fen": "2N5/8/5k2/8/8/8/8/3K4 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRvK",
+    "fen": "6K1/8/4k3/8/8/8/8/R7 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KRvK",
+    "fen": "8/8/7K/7R/8/6k1/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRvK",
+    "fen": "2R5/8/8/8/8/4K3/1k6/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRvK",
+    "fen": "8/8/8/5R2/1K6/8/4k3/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KRvK",
+    "fen": "8/4R3/8/8/k7/8/8/K7 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KRvK",
+    "fen": "7K/8/8/8/5k2/8/7R/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KRvK",
+    "fen": "8/2k5/5K2/6R1/8/8/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRvK",
+    "fen": "8/8/8/8/8/6R1/1K1k4/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRvK",
+    "fen": "8/8/7K/8/4R3/8/8/5k2 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KRvK",
+    "fen": "8/8/2R3K1/8/8/k7/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRvK",
+    "fen": "8/7k/8/8/2K5/8/8/2R5 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRvK",
+    "fen": "8/8/Rk6/8/1K6/8/8/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KQvK",
+    "fen": "8/8/K7/8/8/k2Q4/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KQvK",
+    "fen": "8/3Q1k2/8/8/8/6K1/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KQvK",
+    "fen": "5k2/8/8/8/1K6/2Q5/8/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KQvK",
+    "fen": "8/2K2k1Q/8/8/8/8/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KQvK",
+    "fen": "8/5K2/8/3k4/8/2Q5/8/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KQvK",
+    "fen": "8/8/K3Q3/8/5k2/8/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KQvK",
+    "fen": "8/4k3/K7/5Q2/8/8/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KQvK",
+    "fen": "8/8/8/8/5K2/8/2k5/5Q2 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KQvK",
+    "fen": "8/8/Q7/8/K7/8/k7/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KQvK",
+    "fen": "8/8/3k4/8/8/6QK/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KQvK",
+    "fen": "3k4/8/6K1/8/8/7Q/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KQvK",
+    "fen": "8/7Q/8/8/7K/8/8/k7 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRvKN",
+    "fen": "8/5R2/8/1n6/8/8/1K6/7k b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRvKN",
+    "fen": "5K1k/8/8/8/8/1n4R1/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRvKN",
+    "fen": "8/8/3K4/8/3n4/5kR1/8/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRvKN",
+    "fen": "8/8/8/1R6/6k1/2n5/2K5/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRvKN",
+    "fen": "8/3K4/8/8/3nR3/6k1/8/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KRvKN",
+    "fen": "R5K1/8/2k5/8/8/8/8/5n2 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRvKN",
+    "fen": "6k1/8/3n4/8/K5R1/8/8/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRvKN",
+    "fen": "8/8/K2k4/7R/8/n7/8/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRvKN",
+    "fen": "8/8/R6n/8/8/5K2/8/5k2 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KRvKN",
+    "fen": "4R3/8/8/k7/n7/8/6K1/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRvKN",
+    "fen": "8/8/8/1R3K2/8/8/n2k4/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KRvKN",
+    "fen": "2k5/3R4/8/8/n7/6K1/8/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRRvK",
+    "fen": "6k1/8/8/8/8/4R3/2R2K2/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KRRvK",
+    "fen": "1R5R/4k3/8/8/8/8/5K2/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KRRvK",
+    "fen": "8/8/K7/7R/8/5R2/7k/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRRvK",
+    "fen": "3K4/k7/8/8/8/4R2R/8/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KRRvK",
+    "fen": "1KR5/4k3/8/8/4R3/8/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRRvK",
+    "fen": "5R2/1K6/7R/8/8/2k5/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRRvK",
+    "fen": "8/k5R1/8/2R5/8/8/1K6/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRRvK",
+    "fen": "4K3/6k1/5R2/8/8/8/8/5R2 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRRvK",
+    "fen": "6R1/8/4R3/1K1k4/8/8/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRRvK",
+    "fen": "8/5k2/8/2K5/8/8/4R3/1R6 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRRvK",
+    "fen": "8/8/R5R1/8/7K/8/8/5k2 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KRRvK",
+    "fen": "8/8/4R3/8/1K6/8/1R6/7k w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPvK",
+    "fen": "8/8/8/8/8/K7/5P1k/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPvK",
+    "fen": "4k3/8/7P/8/3K4/8/8/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KPvK",
+    "fen": "1k6/8/8/8/5P2/8/7K/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KPvK",
+    "fen": "8/8/3K4/8/8/5k2/1P6/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KPvK",
+    "fen": "8/1K6/8/3k4/8/1P6/8/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KPvK",
+    "fen": "8/8/8/6K1/P7/8/8/4k3 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KPvK",
+    "fen": "5K2/8/8/3k4/8/8/P7/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KPvK",
+    "fen": "2K5/6k1/8/8/2P5/8/8/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPvK",
+    "fen": "8/8/P1K5/8/8/2k5/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KPvK",
+    "fen": "8/8/8/5K2/8/P6k/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KPvK",
+    "fen": "8/2K5/8/2k5/8/5P2/8/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KPvK",
+    "fen": "8/8/2K4P/8/5k2/8/8/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPvKP",
+    "fen": "8/6p1/Pk6/3K4/8/8/8/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KPvKP",
+    "fen": "8/8/1Kp5/8/1P6/8/8/3k4 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KPvKP",
+    "fen": "8/8/5K2/5P2/8/1p6/8/5k2 b - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPvKP",
+    "fen": "8/8/1k4p1/8/8/1P6/6K1/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KPvKP",
+    "fen": "8/1P6/8/5K2/8/1p2k3/8/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPvKP",
+    "fen": "3k4/8/8/2p5/6P1/8/3K4/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KPvKP",
+    "fen": "8/3k4/8/8/8/1P6/p6K/8 w - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KPvKP",
+    "fen": "8/5p2/8/K7/8/8/k1P5/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPvKP",
+    "fen": "4K3/8/8/8/8/1k6/3Pp3/8 b - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPvKP",
+    "fen": "6K1/8/8/3P4/7k/8/6p1/8 w - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KPvKP",
+    "fen": "6K1/8/2p5/5P2/8/2k5/8/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPvKP",
+    "fen": "3k4/4pP2/1K6/8/8/8/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KPPvK",
+    "fen": "8/8/P1P5/8/3K4/8/8/k7 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KPPvK",
+    "fen": "8/7P/8/8/1K6/8/6P1/7k b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KPPvK",
+    "fen": "6k1/1P6/8/8/1P6/8/8/3K4 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPPvK",
+    "fen": "8/8/8/3k4/PK1P4/8/8/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPPvK",
+    "fen": "4K3/8/7k/5P1P/8/8/8/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPPvK",
+    "fen": "8/8/2P5/P7/2k1K3/8/8/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KPPvK",
+    "fen": "8/8/8/4K3/8/1k2P2P/8/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPPvK",
+    "fen": "8/8/4P3/5k2/8/1P6/K7/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KPPvK",
+    "fen": "8/2K5/8/8/8/P7/1k1P4/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPPvK",
+    "fen": "7K/8/8/7P/5P2/8/k7/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KPPvK",
+    "fen": "6k1/8/6P1/6KP/8/8/8/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPPvK",
+    "fen": "8/8/3K3k/7P/8/1P6/8/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KRBvKR",
+    "fen": "8/r7/8/1k1B4/7R/7K/8/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRBvKR",
+    "fen": "2B5/6k1/8/4r3/8/5R2/8/5K2 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRBvKR",
+    "fen": "2K5/8/8/3r4/1k3B2/4R3/8/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRBvKR",
+    "fen": "2r2B2/8/8/3R4/5k2/8/7K/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRBvKR",
+    "fen": "8/5B2/5R2/4K3/8/8/8/2kr4 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRBvKR",
+    "fen": "8/8/3R4/8/5r2/3K3B/8/2k5 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRBvKR",
+    "fen": "3r4/8/7R/1k6/8/7B/1K6/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRBvKR",
+    "fen": "3KB3/8/8/8/3R4/6k1/8/6r1 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRBvKR",
+    "fen": "3RK3/8/8/8/B7/r7/3k4/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRBvKR",
+    "fen": "3K4/4B3/4r3/2R5/8/8/8/k7 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRBvKR",
+    "fen": "3K4/8/6r1/4k3/8/8/8/3R3B b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KRBvKR",
+    "fen": "8/6K1/8/4R3/8/4k3/7r/6B1 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KNNvK",
+    "fen": "3K3N/N7/8/4k3/8/8/8/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNNvK",
+    "fen": "8/5N2/6N1/6k1/K7/8/8/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNNvK",
+    "fen": "8/8/2N5/8/3KN3/8/8/4k3 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNNvK",
+    "fen": "8/2K5/6N1/8/1N1k4/8/8/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNNvK",
+    "fen": "N7/5k1K/8/8/8/3N4/8/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNNvK",
+    "fen": "8/8/8/2K5/8/1Nk1N3/8/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNNvK",
+    "fen": "8/8/7k/8/8/8/2N5/3K3N w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNNvK",
+    "fen": "8/8/1N6/8/8/1K2N3/5k2/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNNvK",
+    "fen": "5N2/8/N7/8/8/4K3/1k6/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNNvK",
+    "fen": "8/1k6/8/8/3K4/3N4/8/1N6 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNNvK",
+    "fen": "8/4N3/7N/8/8/8/5k1K/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KNNvK",
+    "fen": "1k6/8/8/8/5K2/8/7N/3N4 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBBvK",
+    "fen": "6K1/3B4/8/8/3B4/8/3k4/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KBBvK",
+    "fen": "8/3B4/8/8/8/8/4kB2/2K5 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KBBvK",
+    "fen": "8/8/4B3/8/4K3/1B4k1/8/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBBvK",
+    "fen": "4K3/4B3/3B4/8/8/7k/8/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBBvK",
+    "fen": "1B1k4/1B6/8/8/8/1K6/8/8 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KBBvK",
+    "fen": "5B1k/8/8/8/8/3B4/6K1/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KBBvK",
+    "fen": "8/5B2/3k3K/2B5/8/8/8/8 b - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBBvK",
+    "fen": "2B5/8/6B1/5K2/8/8/8/k7 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBBvK",
+    "fen": "7B/4K3/8/8/8/8/7B/2k5 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBBvK",
+    "fen": "2k5/8/8/7K/8/B7/5B2/8 w - - 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KBBvK",
+    "fen": "7K/8/2B5/4B3/8/8/5k2/8 b - - 0 1",
+    "wdl": -2
+  },
+  {
+    "material": "KBBvK",
+    "fen": "8/7B/8/2B5/2K5/8/8/5k2 w - - 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPvKP-ep",
+    "fen": "4k3/8/8/8/3pP3/8/8/4K3 b - e3 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KPvKP-ep",
+    "fen": "4k3/8/8/3Pp3/8/8/8/4K3 w - e6 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KPvKP-ep",
+    "fen": "1k6/8/8/2pP4/8/8/2K5/8 w - c6 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KPvKP-ep",
+    "fen": "1K6/8/8/3Pp3/8/8/8/6k1 w - e6 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPvKP-ep",
+    "fen": "8/1k6/8/6pP/8/8/8/2K5 w - g6 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPvKP-ep",
+    "fen": "8/6k1/8/8/Pp4K1/8/8/8 b - a3 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPvKP-ep",
+    "fen": "8/8/4k3/8/2Pp4/5K2/8/8 b - c3 0 1",
+    "wdl": 0
+  },
+  {
+    "material": "KPvKP-ep",
+    "fen": "8/8/8/8/1Pp5/8/8/k4K2 b - b3 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPvKP-ep",
+    "fen": "8/8/8/pP6/5K2/8/8/3k4 w - a6 0 1",
+    "wdl": 2
+  },
+  {
+    "material": "KPvKP-ep",
+    "fen": "8/8/7k/8/6pP/8/8/3K4 b - h3 0 1",
+    "wdl": 2
+  }
+]
