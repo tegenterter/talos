@@ -50,6 +50,12 @@ type searchCtx struct {
 	sem chan *thread
 	// splitMinDepth is the shallowest depth at which work may be split.
 	splitMinDepth int
+
+	// rep reports search progress via Options.OnInfo, or is nil when there
+	// is nothing to report to. Only the driver thread touches it — see
+	// reporter's doc comment for why that restriction is the design rather
+	// than an oversight.
+	rep *reporter
 }
 
 // thread holds the state belonging to exactly one searching goroutine.
@@ -67,6 +73,11 @@ type thread struct {
 	// selDepth is this thread's deepest ply, merged into s.selDepth when
 	// the thread finishes.
 	selDepth int
+
+	// driver marks the one thread running the iterative-deepening loop,
+	// which is also the only thread that ever searches a root node. It is
+	// the only thread allowed to report progress (see reporter).
+	driver bool
 
 	// sp is the innermost split point this thread is working under, or nil
 	// if it isn't working on a split-off subtree.
@@ -174,6 +185,14 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 		if t.sp.dead() {
 			t.cut = true
 			return 0
+		}
+		// Progress reporting rides the same sampled interval, for the same
+		// reason the checks above do: it needs a time.Now() it would
+		// otherwise have to pay for per node. Only negamax does this, not
+		// quiescence — a quiescence excursion always returns here within a
+		// few plies, so the driver passes through this point constantly.
+		if t.driver {
+			t.s.rep.heartbeat(t.selDepth)
 		}
 	}
 	if ply > t.selDepth {
@@ -411,6 +430,14 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 			// never blocks, which is what makes deadlock impossible.
 		}
 
+		if ply == 0 {
+			// Reported only for root moves searched on this goroutine: a
+			// move handed to a helper above is being searched alongside
+			// several others, so "the move being searched now" isn't a
+			// single answer there.
+			t.s.rep.currMove(move, i+1, t.selDepth)
+		}
+
 		var childPV []board.Move
 		score := t.searchChild(b, move, i, depth, ply, alpha, beta, inCheck, childPathLen, &childPV)
 		if t.aborted || t.cut {
@@ -425,6 +452,12 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 				// window, so only then is childPV a real line rather than
 				// the by-product of a bound-proving scout search.
 				*pv = append([]board.Move{move}, childPV...)
+				if ply == 0 {
+					// A new best line at the root is news now, not when
+					// the iteration eventually finishes — which on a deep
+					// iteration can be minutes away.
+					t.s.rep.rootUpdate(t.selDepth, score, rootBound(score, beta), *pv)
+				}
 			} else if len(*pv) == 0 {
 				// Everything tried so far failed low, so there's no line
 				// worth reporting — but callers still need a legal move,
@@ -481,6 +514,9 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 				bestMove = r.move
 				if r.score > alpha {
 					*pv = append([]board.Move{r.move}, r.pv...)
+					if ply == 0 {
+						t.s.rep.rootUpdate(t.selDepth, r.score, rootBound(r.score, beta), *pv)
+					}
 				} else if len(*pv) == 0 {
 					*pv = []board.Move{r.move}
 				}

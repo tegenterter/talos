@@ -80,11 +80,16 @@ type Options struct {
 	// whatever MaxTime/MaxIterations/Infinite already governs. A nil
 	// Context behaves like context.Background() (never cancels on its own).
 	Context context.Context
-	// OnInfo, if set, is called periodically (every InfoInterval) during
-	// the search and once more with the final statistics before Search
-	// returns, mirroring how UCI engines stream "info" lines.
+	// OnInfo, if set, is called with each completed iterative-deepening
+	// depth, with the final statistics before Search returns, and — once a
+	// search has run long enough that an unfinished iteration would
+	// otherwise look like a hang — with progress from inside that
+	// iteration, mirroring how UCI engines stream "info" lines. See
+	// reporter (report.go) for what gets reported when.
 	OnInfo func(Info)
-	// InfoInterval throttles OnInfo. Zero means DefaultInfoInterval.
+	// InfoInterval is how often the periodic progress heartbeat may
+	// report while an iteration is still running; completed depths are
+	// never throttled. Zero means DefaultInfoInterval.
 	InfoInterval time.Duration
 	// Threads is how many goroutines the search may use: the calling
 	// goroutine drives iterative deepening, and the other Threads-1 are
@@ -136,8 +141,12 @@ type Options struct {
 const DefaultMaxTime = 1 * time.Second
 
 // DefaultInfoInterval is used when Options.OnInfo is set but
-// Options.InfoInterval is zero.
-const DefaultInfoInterval = 200 * time.Millisecond
+// Options.InfoInterval is zero. A second, rather than something snappier,
+// because this now paces only the heartbeat that fills silence during a
+// long iteration (see reporter) — results are reported the moment they
+// exist — and a line every 200ms of a multi-minute iteration is a wall of
+// near-identical text to scroll past rather than a sign of life.
+const DefaultInfoInterval = 1 * time.Second
 
 // Soft-limit tuning. An iterative-deepening iteration that gets aborted is
 // discarded wholesale, so every millisecond spent past the last *completed*
@@ -259,6 +268,7 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 		gameHistory:   repeatableHistory(opts.GameHistory, root.HalfmoveClock),
 		splitMinDepth: splitMinDepth,
 	}
+	sc.rep = newReporter(opts.OnInfo, infoInterval, start, tt, &nodes)
 
 	// The helper pool. Threads are allocated once, up front, and handed
 	// around through a channel for the rest of the search — a thread is
@@ -295,9 +305,8 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 		pv                     []board.Move
 	}
 
-	t := &thread{s: sc}
+	t := &thread{s: sc, driver: true}
 
-	lastInfo := start
 	var best result
 	var prevScore int
 	haveScore := false
@@ -320,6 +329,7 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 		}
 
 		iterationStart := time.Now()
+		sc.rep.beginIteration(depth)
 
 		// Every thread's history is decayed, not just the driver's. Helpers
 		// accumulate history for the whole search, so decaying only this
@@ -344,10 +354,7 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 		prevScore, haveScore = score, true
 		lastIteration = time.Since(iterationStart)
 
-		if opts.OnInfo != nil && time.Since(lastInfo) >= infoInterval {
-			opts.OnInfo(buildInfo(best.depth, best.selDepth, best.score, int(nodes.Load()), time.Since(start), best.pv))
-			lastInfo = time.Now()
-		}
+		sc.rep.complete(best.depth, best.selDepth, best.score, best.pv)
 	}
 
 	if len(best.pv) == 0 {
@@ -365,12 +372,10 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 		h.mergeSelDepth()
 	}
 
-	if opts.OnInfo != nil {
-		// selDepth is reported across every thread, not just the winning
-		// one: it means "the deepest ply this search reached anywhere",
-		// which is what UCI's seldepth denotes regardless of thread count.
-		opts.OnInfo(buildInfo(best.depth, int(sc.selDepth.Load()), best.score, int(nodes.Load()), time.Since(start), best.pv))
-	}
+	// selDepth is reported across every thread, not just the winning one:
+	// it means "the deepest ply this search reached anywhere", which is
+	// what UCI's seldepth denotes regardless of thread count.
+	sc.rep.complete(best.depth, int(sc.selDepth.Load()), best.score, best.pv)
 
 	return best.pv[0], true
 }
@@ -426,6 +431,11 @@ func (t *thread) aspirationSearch(root *board.Board, depth, prevScore int, haveS
 			return score
 		}
 		if score <= alpha {
+			// A fail-low is the one root result the move loop can't report
+			// itself: no move raised alpha, so nothing in there fired. It
+			// is also the report a watching human most wants — the score
+			// is dropping, and the re-search below may take a while.
+			t.s.rep.rootUpdate(t.selDepth, score, BoundUpper, *pv)
 			window *= 2
 			alpha = prevScore - window
 			if alpha < -infinity {

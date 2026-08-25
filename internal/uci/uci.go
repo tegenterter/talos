@@ -187,7 +187,13 @@ func run(in io.Reader, rawOut io.Writer) {
 				var lastInfo search.Info
 				opts.OnInfo = func(i search.Info) {
 					printInfo(out, i)
-					lastInfo = i
+					// Only a report that carries a line updates what the
+					// ponder move below is read from: currmove reports and
+					// heartbeats have no PV, and letting one overwrite
+					// this would drop the ponder move for no reason.
+					if len(i.PV) > 0 {
+						lastInfo = i
+					}
 				}
 
 				move, ok := search.Search(boardCopy, opts)
@@ -550,19 +556,59 @@ func allocateTime(remainingMs, incMs, movesToGo int) time.Duration {
 // search has found one, in centipawns otherwise), how many nodes it's
 // searched and how fast, and the line (principal variation) it currently
 // favors.
+// printInfo writes one UCI "info" line. Three shapes come out of
+// internal/search's reporting (see its Info), and they are distinguished
+// here by which fields are populated rather than by a tag:
+//
+//   - a currmove report (CurrMoveNumber set): which root move is being
+//     searched right now, carrying no result of its own;
+//   - a result (PV non-empty): the usual depth/score/pv line, tagged
+//     lowerbound/upperbound when the score is only a bound;
+//   - a heartbeat (neither): nodes/nps/time/hashfull while a long
+//     iteration is still running, deliberately without a score, since the
+//     search has not proved one for this depth yet.
+//
+// Field order follows Stockfish's, which is what GUIs are used to reading,
+// though UCI itself imposes none.
 func printInfo(out io.Writer, i search.Info) {
-	pv := make([]string, len(i.PV))
-	for idx, m := range i.PV {
-		pv[idx] = m.String()
+	if i.CurrMoveNumber > 0 {
+		fmt.Fprintf(out, "info depth %d currmove %s currmovenumber %d\n",
+			i.Depth, i.CurrMove.String(), i.CurrMoveNumber)
+		return
 	}
 
-	score := fmt.Sprintf("cp %d", i.ScoreCP)
-	if i.Mate != 0 {
-		score = fmt.Sprintf("mate %d", i.Mate)
+	var line strings.Builder
+	fmt.Fprintf(&line, "info depth %d seldepth %d", i.Depth, i.SelDepth)
+
+	if len(i.PV) > 0 {
+		if i.Mate != 0 {
+			fmt.Fprintf(&line, " score mate %d", i.Mate)
+		} else {
+			fmt.Fprintf(&line, " score cp %d", i.ScoreCP)
+		}
+		switch i.Bound {
+		case search.BoundLower:
+			line.WriteString(" lowerbound")
+		case search.BoundUpper:
+			line.WriteString(" upperbound")
+		}
 	}
 
-	fmt.Fprintf(out, "info depth %d seldepth %d score %s nodes %d nps %d time %d pv %s\n",
-		i.Depth, i.SelDepth, score, i.Nodes, i.Nps, i.Time.Milliseconds(), strings.Join(pv, " "))
+	fmt.Fprintf(&line, " nodes %d nps %d", i.Nodes, i.Nps)
+	if i.HashFull > 0 {
+		fmt.Fprintf(&line, " hashfull %d", i.HashFull)
+	}
+	fmt.Fprintf(&line, " time %d", i.Time.Milliseconds())
+
+	if len(i.PV) > 0 {
+		pv := make([]string, len(i.PV))
+		for idx, m := range i.PV {
+			pv[idx] = m.String()
+		}
+		fmt.Fprintf(&line, " pv %s", strings.Join(pv, " "))
+	}
+
+	fmt.Fprintln(out, line.String())
 }
 
 // pieceLetter renders a piece in FEN's convention: uppercase for White,
