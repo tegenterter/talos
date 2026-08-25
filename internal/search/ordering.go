@@ -24,6 +24,19 @@ func isCapture(b *board.Board, m board.Move) bool {
 	return occupied
 }
 
+// capturedValue returns the value of the piece m captures, using the same
+// rough ordering-only values (pieceOrderValue) the rest of this file relies
+// on elsewhere — not a claim of positional accuracy, just "how much
+// material is on the table here." m is assumed to be a capture (see
+// isCapture).
+func capturedValue(b *board.Board, m board.Move) int {
+	if m.Flag == board.EnPassantCapture {
+		return pieceOrderValue[board.Pawn]
+	}
+	_, pt, _ := b.PieceAt(m.To)
+	return pieceOrderValue[pt]
+}
+
 // hasNonPawnMaterial reports whether c has any piece besides pawns and
 // king — used to skip null-move pruning in likely-zugzwang positions
 // (bare king-and-pawn endgames), null-move's best-known failure mode.
@@ -31,6 +44,30 @@ func hasNonPawnMaterial(b *board.Board, c board.Color) bool {
 	return b.Pieces[c][board.Knight] != 0 || b.Pieces[c][board.Bishop] != 0 ||
 		b.Pieces[c][board.Rook] != 0 || b.Pieces[c][board.Queen] != 0
 }
+
+// totalNonPawnMaterial sums pieceOrderValue over every knight/bishop/rook/
+// queen on the board, both colors — a quantitative companion to
+// hasNonPawnMaterial's boolean check, used to scale quiescence's delta
+// pruning margin by how much of the game's material is still on the board
+// (see quiescence.go's deltaPruningMarginFor). hasNonPawnMaterial itself
+// can't serve that purpose: it's a presence check, so it can't distinguish
+// a dense middlegame from a bare-bones single-rook-per-side endgame, and
+// the latter is exactly where a flat pruning margin was found to be unsafe.
+func totalNonPawnMaterial(b *board.Board) int {
+	total := 0
+	for c := board.White; c <= board.Black; c++ {
+		for pt := board.Knight; pt <= board.Queen; pt++ {
+			total += b.Pieces[c][pt].Count() * pieceOrderValue[pt]
+		}
+	}
+	return total
+}
+
+// startingNonPawnMaterial is totalNonPawnMaterial's value at the game's
+// start (2 knights + 2 bishops + 2 rooks + 1 queen per side), used to
+// normalize it into a 0..1 "how much of the opening's material is left"
+// phase.
+const startingNonPawnMaterial = 2 * (2*320 + 2*330 + 2*500 + 900) // 6400
 
 // orderMoves returns moves sorted so the search examines its most
 // promising candidates first — critical for alpha-beta, since a good move

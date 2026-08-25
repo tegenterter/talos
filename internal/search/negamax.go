@@ -176,6 +176,27 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 		return nnue.Evaluate(b)
 	}
 
+	// Mate distance pruning: a mate can never be reported faster than ply
+	// plies from here, and this side can never be found to be losing more
+	// slowly than getting mated at ply. Once alpha/beta are clamped into
+	// that range, a return here is provably correct without a TT probe,
+	// move generation, or searching a single child — the window itself
+	// already proves no result inside it could change. Only ever tightens
+	// (never fires) at the root, since alpha/beta start at ±infinity there
+	// (search.go); it starts pruning once some branch elsewhere in the
+	// tree has already proven a mate score.
+	if mdpEnabled {
+		if alpha < -mateValue+ply {
+			alpha = -mateValue + ply
+		}
+		if beta > mateValue-ply {
+			beta = mateValue - ply
+		}
+		if alpha >= beta {
+			return alpha
+		}
+	}
+
 	hash := b.Hash()
 
 	// Draw detection only applies to positions reached *during* this
@@ -212,7 +233,16 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 	haveTTMove := false
 	if entry, ok := t.s.tt.probe(hash, ply); ok {
 		ttMove, haveTTMove = entry.move, true
-		if entry.depth >= depth {
+		// Same ply>0 restriction, and for the same reason, as the
+		// draw/tablebase checks above: the root always needs a move it
+		// actually searched this iteration, with a real reconstructed
+		// principal variation — not a bare best move and a cached score.
+		// Without this, aspiration windows re-searching the same depth
+		// after a fail-low/fail-high (search.go's aspirationSearch) could
+		// have the root's own probe hit an entry its own first attempt at
+		// this depth just stored, and return here with *pv truncated to
+		// one move.
+		if ply > 0 && entry.depth >= depth {
 			switch entry.flag {
 			case ttExact:
 				*pv = []board.Move{entry.move}
@@ -620,6 +650,12 @@ var pvsEnabled = true
 // (compare node counts with it on vs. off on the same position/depth) —
 // there's no UCI option or other production path that ever sets it false.
 var lmrEnabled = true
+
+// mdpEnabled exists only so mdp_test.go can measure mate distance
+// pruning's actual effect (compare node counts and confirm identical mate
+// results with it on vs. off) — there's no UCI option or other production
+// path that ever sets it false.
+var mdpEnabled = true
 
 // LMR (Late Move Reductions) tuning constants.
 const (

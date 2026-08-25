@@ -83,18 +83,46 @@ func TestSearchIsDeterministic(t *testing.T) {
 // TestSearchMatchesGoldenBaselines pins the search's exact output. See the
 // file comment for what to do when it fails.
 func TestSearchMatchesGoldenBaselines(t *testing.T) {
-	// Recorded at goldenDepth, Threads: 1. Last re-recorded when PVS landed,
-	// which raised counts at this depth on purpose — see
-	// TestPVSNodeEffectScalesWithDepth for why depth 6 flatters PVS least.
+	// Recorded at goldenDepth, Threads: 1. Last re-recorded when quiescence
+	// delta pruning's margin became material-phase-scaled (deltaPruningMarginMin/
+	// Max in quiescence.go) instead of a flat 800: node counts dropped in
+	// the three dense-middlegame positions (startpos/kiwipete/italian, all
+	// scores unchanged) since they now get a margin close to
+	// deltaPruningMarginMin=200 instead of the old flat 800, recovering
+	// most of delta pruning's efficiency benefit where it's safe.
+	// pawn-endgame's score moved from 660 to 704 — its low material phase
+	// keeps its effective margin close to deltaPruningMarginMax=800
+	// regardless of Min (verified: identical at every Min from 100-250 in
+	// a calibration sweep), and 704 is the same value flat margin=700
+	// produced during the original investigation, i.e. delta pruning's own
+	// ordinary effect, not the aspiration-interaction corruption that
+	// motivated raising the margin in the first place (which produced
+	// scores like 1269/1464/1306 — see deltaPruningMarginMin/Max's doc
+	// comment). rook-endgame was unaffected. Before that, re-recorded when
+	// aspiration windows landed (search.go): they change node counts/PV
+	// tails at this depth (aspiration only activates at depth >=
+	// aspirationMinDepth), and required the delta-pruning margin to be
+	// raised from 200 to a flat 800 as an interim fix — see quiescence.go's
+	// doc comment for the full story now that it's phase-scaled instead.
+	// Before that, re-recorded when quiescence delta pruning landed: it changed the
+	// deeper quiescence continuation (and, on pawn-endgame, the reported
+	// score/PV tail) on positions with prunable near-margin captures,
+	// though the actual root move chosen stayed the same everywhere.
+	// Before that, re-recorded when mate distance pruning landed, which
+	// only lowered node counts (no score/PV changed) since none of these
+	// positions are near a mate score at this depth. Before that,
+	// re-recorded when PVS landed, which raised counts at this depth on
+	// purpose — see TestPVSNodeEffectScalesWithDepth for why depth 6
+	// flatters PVS least.
 	golden := map[string]struct {
 		nodes, depth, scoreCP int
 		pv                    string
 	}{
-		"startpos":     {22529, 6, 45, "e2e4 c7c5 g1f3 b8c6 d2d4"},
-		"kiwipete":     {93890, 6, -196, "e2a6 b4c3 d2c3 e6d5 e4d5 f6d5"},
-		"italian":      {36251, 6, -58, "g8f6 d2d4 e5d4 e1g1 f8c5 e4e5"},
-		"pawn-endgame": {8913, 6, 660, "b4f4 h4g3 f4c4 h5h7 a5a6 g3g2"},
-		"rook-endgame": {19677, 6, 1606, "a1a3 e8d7 e1e2 d7d6 a3g3 d6c7"},
+		"startpos":     {20110, 6, 45, "e2e4 c7c5 g1f3 b8c6 d2d4"},
+		"kiwipete":     {68749, 6, -196, "e2a6 b4c3 d2c3 e6d5 e4d5 f6d5"},
+		"italian":      {29522, 6, -58, "g8f6 d2d4 e5d4 e1g1 f8c5 e4e5"},
+		"pawn-endgame": {9200, 6, 704, "b4f4 h4g3 f4c4 h5c5"},
+		"rook-endgame": {21500, 6, 1606, "e1e2 e8d7 a1a3 d7d6 a3g3"},
 	}
 
 	for _, p := range goldenPositions {

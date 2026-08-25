@@ -3,10 +3,12 @@
 // (pre-NNUE) Stockfish: a shared transposition table (tt.go), SEE +
 // killer-move + history move ordering (ordering.go, see.go), quiescence
 // search and check extensions (quiescence.go, negamax.go), null-move
-// pruning, principal variation search, and late move reductions
-// (negamax.go). It intentionally leaves out the deeper end of Stockfish's
-// own technique list — aspiration windows, futility pruning, singular
-// extensions — to keep this a manageable, well-understood implementation.
+// pruning, principal variation search, late move reductions (negamax.go),
+// mate distance pruning, quiescence delta pruning (quiescence.go), and
+// aspiration windows (search.go's aspirationSearch). It intentionally
+// leaves out the deeper end of Stockfish's own technique list — futility
+// pruning, singular extensions — to keep this a manageable,
+// well-understood implementation.
 //
 // Options.Threads > 1 splits the search tree across goroutines, following
 // the Young Brothers Wait Concept: a node searches its first move to
@@ -210,15 +212,18 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 
 	lastInfo := start
 	var best result
+	var prevScore int
+	haveScore := false
 
 	for depth := 1; depth <= maxDepth; depth++ {
 		t.decayHistory()
 		var pv []board.Move
-		score := t.negamax(&root, depth, 0, -infinity, infinity, &pv, 0)
+		score := t.aspirationSearch(&root, depth, prevScore, haveScore, &pv)
 		if t.aborted {
 			break // discard this incomplete depth; keep the previous one
 		}
 		best = result{score: score, depth: depth, selDepth: t.selDepth, pv: pv}
+		prevScore, haveScore = score, true
 
 		if opts.OnInfo != nil && time.Since(lastInfo) >= infoInterval {
 			opts.OnInfo(buildInfo(best.depth, best.selDepth, best.score, int(nodes.Load()), time.Since(start), best.pv))
@@ -249,4 +254,74 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 	}
 
 	return best.pv[0], true
+}
+
+// aspirationMinDepth is the shallowest iteration aspiration windows apply
+// to: a score from a shallow iteration is too unstable (few plies of
+// lookahead) to window profitably, so early depths always get the full
+// -infinity..infinity window instead.
+const aspirationMinDepth = 4
+
+// aspirationWindowCP is the initial half-width (in centipawns) of the
+// window searched around the previous iteration's score. Doubled on each
+// fail-low/fail-high before re-searching the same depth. A var, not a
+// const, so aspiration_test.go can force a fail on the first try by
+// shrinking it drastically.
+var aspirationWindowCP = 25
+
+// aspirationEnabled exists only so aspiration_test.go can measure
+// aspiration windows' actual effect (compare node counts, and confirm
+// fail-low/fail-high re-search recovers the exact correct score, with it
+// on vs. off) — there's no UCI option or other production path that ever
+// sets it false.
+var aspirationEnabled = true
+
+// aspirationSearch runs one iterative-deepening iteration at depth, using a
+// narrow window around prevScore (the previous iteration's completed
+// score) when that's likely to pay off, re-searching the same depth with a
+// widened window on fail-low/fail-high. haveScore is false for the very
+// first iteration, which has no previous score to window around.
+//
+// A narrow window lets negamax's alpha-beta cutoffs trigger sooner — most
+// of the time the true score doesn't move much between adjacent
+// iterations, so a tight window around the last one is usually right on
+// the first try. When it isn't, the failed search still wasn't wasted: it
+// only ever narrows down which side (fail-low or fail-high) the widened
+// re-search needs to explore further.
+func (t *thread) aspirationSearch(root *board.Board, depth, prevScore int, haveScore bool, pv *[]board.Move) int {
+	if !aspirationEnabled || !haveScore || depth < aspirationMinDepth ||
+		prevScore <= -mateThreshold || prevScore >= mateThreshold {
+		// Mate scores are excluded too: narrowing around one is either
+		// meaningless (any window around a near-mateValue score is either
+		// far too wide or immediately fails) or an easy source of subtle
+		// window-arithmetic bugs near mateValue, for no real benefit.
+		return t.negamax(root, depth, 0, -infinity, infinity, pv, 0)
+	}
+
+	window := aspirationWindowCP
+	alpha, beta := prevScore-window, prevScore+window
+	for {
+		*pv = nil
+		score := t.negamax(root, depth, 0, alpha, beta, pv, 0)
+		if t.aborted {
+			return score
+		}
+		if score <= alpha {
+			window *= 2
+			alpha = prevScore - window
+			if alpha < -infinity {
+				alpha = -infinity
+			}
+			continue
+		}
+		if score >= beta {
+			window *= 2
+			beta = prevScore + window
+			if beta > infinity {
+				beta = infinity
+			}
+			continue
+		}
+		return score
+	}
 }
