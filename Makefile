@@ -14,7 +14,7 @@ DATAGEN_NODES   ?= 5000
 DATAGEN_THREADS ?= 1
 DATAGEN_SEED    ?= 1
 
-.PHONY: all build run test test-short vet fmt fmt-check bench datagen ci clean
+.PHONY: all build run test test-short vet fmt fmt-check bench datagen pack ci clean
 
 all: build
 
@@ -63,6 +63,17 @@ datagen: build
 		-nodes $(DATAGEN_NODES) \
 		-threads $(DATAGEN_THREADS) \
 		-seed $(DATAGEN_SEED)
+
+# Converts a datagen dump into the fixed-size binary records a trainer
+# memory-maps. Separate from datagen so the text dump stays the archival
+# artifact and packing can be redone whenever the feature set changes.
+#   make pack PACK_IN=run1.plain PACK_OUT=run1.bin
+pack: build
+	@if [ -z "$(PACK_IN)" ]; then \
+		echo "usage: make pack PACK_IN=<file.plain> [PACK_OUT=<file.bin>]" >&2; \
+		exit 2; \
+	fi
+	./$(BINARY) pack -in $(PACK_IN) -out $(if $(PACK_OUT),$(PACK_OUT),$(PACK_IN:.plain=.bin))
 
 # What CI (or a pre-push check) should run: formatting, vet, and the full
 # test suite, in order of how cheap they are to fail on.
