@@ -4,13 +4,19 @@ package board
 // follow piece movement rules, without checking whether the move leaves
 // the mover's own king in check.
 func GeneratePseudoLegalMoves(b *Board) []Move {
+	return GeneratePseudoLegalMovesInto(b, make([]Move, 0, 32))
+}
+
+// GeneratePseudoLegalMovesInto is GeneratePseudoLegalMoves appending into a
+// caller-owned slice, so a search can reuse one buffer per ply instead of
+// allocating a move list at every node — which was two thirds of all the
+// memory the engine allocated.
+func GeneratePseudoLegalMovesInto(b *Board, moves []Move) []Move {
 	us := b.SideToMove
 	them := us.Opposite()
 	own := b.ColorBB(us)
 	enemy := b.ColorBB(them)
 	occ := own | enemy
-
-	moves := make([]Move, 0, 32)
 
 	generatePawnMoves(b, us, occ, enemy, &moves)
 
@@ -51,7 +57,53 @@ func GeneratePseudoLegalMoves(b *Board) []Move {
 
 // GenerateLegalMoves filters pseudo-legal moves down to those that don't
 // leave the mover's own king in check.
+//
+// The filtering itself is in legality.go, which decides each move from
+// bitboards computed once here rather than by playing it. See that file for
+// why: doing it the obvious way cost 16% of the engine's total CPU.
 func GenerateLegalMoves(b *Board) []Move {
+	us := b.SideToMove
+	kingSq := b.Pieces[us][King].LSB()
+	occ := b.OccupiedBB()
+	checkers := attackersTo(b, kingSq, us.Opposite(), occ)
+	pinned := pinnedTo(b, kingSq, us, occ)
+
+	pseudo := GeneratePseudoLegalMoves(b)
+	return filterLegal(b, pseudo, us, kingSq, occ, checkers, pinned)
+}
+
+// GenerateLegalMovesInto is GenerateLegalMoves using caller-owned storage.
+// The illegal moves are filtered out of the buffer in place, so one buffer
+// per ply serves both stages and nothing is allocated at all.
+func GenerateLegalMovesInto(b *Board, buf []Move) []Move {
+	us := b.SideToMove
+	kingSq := b.Pieces[us][King].LSB()
+	occ := b.OccupiedBB()
+	checkers := attackersTo(b, kingSq, us.Opposite(), occ)
+	pinned := pinnedTo(b, kingSq, us, occ)
+
+	pseudo := GeneratePseudoLegalMovesInto(b, buf[:0])
+	return filterLegal(b, pseudo, us, kingSq, occ, checkers, pinned)
+}
+
+// filterLegal compacts moves down to the legal ones, in place.
+func filterLegal(b *Board, moves []Move, us Color, kingSq Square, occ, checkers, pinned Bitboard) []Move {
+	n := 0
+	for _, m := range moves {
+		if isLegal(b, m, us, kingSq, occ, checkers, pinned) {
+			moves[n] = m
+			n++
+		}
+	}
+	return moves[:n]
+}
+
+// generateLegalMovesByMakeMove is the previous implementation: play every
+// pseudo-legal move and keep the ones that leave the king safe. It is kept
+// as the reference the fast path is differentially tested against (see
+// legality_test.go) — obviously correct, and slow enough that it earned
+// replacing.
+func generateLegalMovesByMakeMove(b *Board) []Move {
 	us := b.SideToMove
 	them := us.Opposite()
 	pseudo := GeneratePseudoLegalMoves(b)

@@ -151,16 +151,22 @@ func TestParallelSpeedsUpSearch(t *testing.T) {
 	}
 	b := mustFEN(t, parallelFEN)
 
+	// The depth has to be deep enough that there is real work to split.
+	// Depth 8 used to take seconds and now takes under a tenth of one, at
+	// which point spawning and joining helpers is most of the measurement
+	// and the test failed on an engine whose parallelism was fine.
+	const depth = 11
+
 	timeAt := func(threads int) time.Duration {
 		start := time.Now()
-		Search(b, Options{MaxDepth: 8, Threads: threads})
+		Search(b, Options{MaxDepth: depth, Threads: threads})
 		return time.Since(start)
 	}
 
 	one := timeAt(1)
 	four := timeAt(4)
 	speedup := float64(one) / float64(four)
-	t.Logf("depth 8: 1 thread = %v, 4 threads = %v (%.2fx speedup)", one, four, speedup)
+	t.Logf("depth %d: 1 thread = %v, 4 threads = %v (%.2fx speedup)", depth, one, four, speedup)
 
 	// Deliberately undemanding: this runs on shared CI-style machines where
 	// timing is noisy, and the purpose is to catch parallelism that does

@@ -83,7 +83,43 @@ func TestSearchIsDeterministic(t *testing.T) {
 // TestSearchMatchesGoldenBaselines pins the search's exact output. See the
 // file comment for what to do when it fails.
 func TestSearchMatchesGoldenBaselines(t *testing.T) {
-	// Recorded at goldenDepth, Threads: 1. Last re-recorded when the
+	// Recorded at goldenDepth, Threads: 1. Last re-recorded when continuation
+	// history landed (conthistory.go) and both history tables moved onto one
+	// scale with a shared bonus and gravity update (ordering.go). Scores are
+	// unchanged everywhere; startpos needs 32% fewer nodes for the same
+	// answer, which is what better move ordering looks like.
+	//
+	// Before that, re-recorded when late move
+	// reductions became a log table and the history heuristic gained its
+	// malus, and — in the same change — when reverse futility, late move and
+	// futility pruning were **removed again** after being measured. That
+	// negative result is worth keeping:
+	//
+	//   - The three of them cut bench nodes 87% and bought two full plies of
+	//     depth at a fixed time control.
+	//   - They scored 0.504 over 354 self-play games: nothing.
+	//   - Asked how often each build agrees with an independent 2s reference
+	//     search over 40 real game positions, the pruning builds landed at
+	//     15-23 of 40 against 26 with no shallow pruning at all.
+	//
+	// So the depth was bought by going blind, in almost exactly the
+	// proportion that cancelled it. The likeliest reason is specific to this
+	// engine rather than to the heuristics: pruning "late" moves is only
+	// safe when late means unpromising, and this move ordering has no
+	// continuation or capture history yet. Ordering first, then pruning.
+	//
+	// Before that, re-recorded when quiescence
+	// began probing and storing in the transposition table, and entries
+	// started carrying a static evaluation and the clock it applies at
+	// (tt.go, quiescence.go). Every position's node count fell — 4-8% on the
+	// four with material on the board — while every score stayed identical,
+	// which is the shape a pure "reuse work already done" change should
+	// have. Three PVs came back shorter for the reason this file's older
+	// note already records: PV reconstruction truncates at a transposition
+	// -table cutoff, so PV length tracks where TT hits land rather than the
+	// true line length, and there are now more hits.
+	//
+	// Before that, re-recorded when the
 	// fifty-move clock started damping the static evaluation and lopsided
 	// endgames started using internal/eval instead of the network (see
 	// evaluate.go). Both were expected to move these numbers, and both
@@ -147,11 +183,11 @@ func TestSearchMatchesGoldenBaselines(t *testing.T) {
 		nodes, depth, scoreCP int
 		pv                    string
 	}{
-		"startpos":     {19366, 6, 45, "e2e4 c7c5 g1f3 b8c6 d2d4"},
-		"kiwipete":     {68111, 6, -196, "e2a6 b4c3 d2c3 e6d5 e4d5"},
-		"italian":      {29818, 6, -58, "g8f6 d2d4 e5d4 e1g1 f8c5 e4e5"},
-		"pawn-endgame": {9281, 6, 704, "b4f4 h4g3 f4c4 h5c5"},
-		"rook-endgame": {10970, 6, 630, "a1a7 e8d8 e1e2 d8e8 e2d3 e8d8"},
+		"startpos":     {12591, 6, 45, "e2e4 c7c5 g1f3 b8c6 d2d4 c5d4"},
+		"kiwipete":     {68025, 6, -196, "e2a6 b4c3 d2c3 e6d5 e4d5"},
+		"italian":      {28077, 6, -58, "g8f6 d2d4 e5d4 e1g1 f8c5"},
+		"pawn-endgame": {8678, 6, 704, "b4f4 h4g3 f4c4 h5c5 c4c5 d6c5"},
+		"rook-endgame": {8210, 6, 630, "a1a7 e8d8 e1e2 d8e8 e2d3 e8d8"},
 	}
 
 	for _, p := range goldenPositions {

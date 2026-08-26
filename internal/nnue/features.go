@@ -52,8 +52,20 @@ func featureIndex(perspective board.Color, orientedKingSq board.Square, pieceCol
 // accumulate returns the perspective's raw (unclamped) accumulator: the
 // feature transformer's biases plus the weight row of every active feature
 // (every non-king piece on the board, from perspective's point of view).
+//
+// Explain (explain.go) needs an accumulator it can keep and modify, so this
+// allocates one; the evaluation path calls accumulateInto instead, with a
+// destination the caller owns, since allocating two of these per evaluation
+// put several million allocations a second through the garbage collector.
 func (n *Network) accumulate(b *board.Board, perspective board.Color) []int16 {
 	acc := make([]int16, halfDimensions)
+	n.accumulateInto(acc, b, perspective)
+	return acc
+}
+
+// accumulateInto is accumulate writing into a caller-owned destination,
+// which must be halfDimensions long.
+func (n *Network) accumulateInto(acc []int16, b *board.Board, perspective board.Color) {
 	copy(acc, n.ftBiases)
 
 	orientedKingSq := orient(perspective, b.Pieces[perspective][board.King].LSB())
@@ -73,5 +85,4 @@ func (n *Network) accumulate(b *board.Board, perspective board.Color) []int16 {
 			}
 		}
 	}
-	return acc
 }

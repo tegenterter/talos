@@ -1,8 +1,6 @@
 package search
 
 import (
-	"sort"
-
 	"talos/internal/board"
 )
 
@@ -103,17 +101,60 @@ func (t *thread) quiescence(b *board.Board, ply, qply, alpha, beta int) int {
 		}
 	}
 
+	// Quiescence probes the same table the main search fills, and it is the
+	// single cheapest thing available here: this is where two thirds of all
+	// nodes are spent, every one of them evaluating, and an entry left by an
+	// earlier (often deeper) visit answers both questions at once — whether
+	// this node can be cut off outright, and what the position evaluates to
+	// if it cannot.
+	hash := b.Hash()
+	alphaOrig := alpha
+	var ttMove board.Move
+	haveTTMove := false
+	cachedEval := noEval
+	if entry, ok := t.s.tt.probe(hash, ply); ok {
+		ttMove = entry.move
+		cachedEval = entry.eval
+		haveTTMove = entry.move != (board.Move{})
+		// The eval above is undamped and used as-is; the score is rescaled
+		// to this node's clock (see ttEntry.scoreAt). Any
+		// stored depth is fine here: quiescence stores at depth 0, and
+		// anything the main search stored was searched deeper still, so its
+		// bound is at least as trustworthy as one computed at this node.
+		score := entry.scoreAt(b.HalfmoveClock)
+		switch entry.flag {
+		case ttExact:
+			return score
+		case ttLowerBound:
+			if score >= beta {
+				return score
+			}
+		case ttUpperBound:
+			if score <= alpha {
+				return score
+			}
+		}
+	}
+
 	kingSq := b.Pieces[b.SideToMove][board.King].LSB()
 	inCheck := board.IsSquareAttacked(b, kingSq, b.SideToMove.Opposite())
 
+	// The raw (undamped) evaluation, computed once and reused: it is the
+	// stand-pat score below and the value stored back into the table.
+	raw := cachedEval
+	if raw == noEval {
+		raw = t.rawEval(b, ply)
+	}
+
 	if qply > maxQuiescencePly {
-		return staticEval(b)
+		return damp(raw, b.HalfmoveClock)
 	}
 
 	standPat := 0
 	if !inCheck {
-		standPat = staticEval(b)
+		standPat = damp(raw, b.HalfmoveClock)
 		if standPat >= beta {
+			t.s.tt.store(hash, board.Move{}, standPat, 0, ttLowerBound, ply, raw, b.HalfmoveClock)
 			return standPat
 		}
 		if standPat > alpha {
@@ -123,13 +164,16 @@ func (t *thread) quiescence(b *board.Board, ply, qply, alpha, beta int) int {
 
 	var moves []board.Move
 	if inCheck {
-		moves = board.GenerateLegalMoves(b)
+		moves = board.GenerateLegalMovesInto(b, t.moveBuf[ply][:])
 		if len(moves) == 0 {
 			return -(mateValue - ply)
 		}
 	} else {
-		all := board.GenerateLegalMoves(b)
-		moves = make([]board.Move, 0, len(all))
+		all := board.GenerateLegalMovesInto(b, t.moveBuf[ply][:])
+		// Compacted in place into the same buffer: the kept moves are
+		// always a prefix of the ones already examined, so writing over
+		// them is safe and saves a second list per node.
+		moves = all[:0]
 		// Computed once per node, not per candidate move — see
 		// deltaPruningMarginFor's doc comment for what it scales by.
 		deltaMargin := deltaPruningMarginFor(b)
@@ -163,27 +207,65 @@ func (t *thread) quiescence(b *board.Board, ply, qply, alpha, beta int) int {
 			return standPat
 		}
 	}
-	sort.SliceStable(moves, func(i, j int) bool { return see(b, moves[i]) > see(b, moves[j]) })
+	// Ordered by SEE, computed once per move rather than once per
+	// comparison: the previous sort called see() inside the comparator, so
+	// each move's exchange was resolved O(log n) times per node. The TT move
+	// sorts above everything, as it does in the main search.
+	//
+	// Stable insertion sort for the same reason orderMoves uses one (see
+	// ordering.go): equal scores keep the generator's order, which is what
+	// keeps the search reproducible.
+	scores := t.scoreBuf[:len(moves)]
+	for i, m := range moves {
+		scores[i] = see(b, m)
+		if haveTTMove && m == ttMove {
+			scores[i] = orderScoreTTMove
+		}
+	}
+	for i := 1; i < len(moves); i++ {
+		m, sc := moves[i], scores[i]
+		j := i - 1
+		for j >= 0 && scores[j] < sc {
+			moves[j+1], scores[j+1] = moves[j], scores[j]
+			j--
+		}
+		moves[j+1], scores[j+1] = m, sc
+	}
 
 	best := standPat
 	if inCheck {
 		best = -infinity // "do nothing" isn't an option while in check, so there's no stand-pat floor
 	}
+	var bestMove board.Move
 	for _, m := range moves {
 		child := board.MakeMove(*b, m)
+		t.s.net.Update(&t.acc[ply+1], &t.acc[ply], b, m, &child)
 		score := -t.quiescence(&child, ply+1, qply+1, -beta, -alpha)
 		if t.aborted {
 			return 0
 		}
 		if score > best {
 			best = score
+			bestMove = m
 		}
 		if score > alpha {
 			alpha = score
 		}
 		if alpha >= beta {
+			bestMove = m
 			break
 		}
+	}
+
+	if !t.aborted {
+		flag := ttExact
+		switch {
+		case best <= alphaOrig:
+			flag = ttUpperBound
+		case best >= beta:
+			flag = ttLowerBound
+		}
+		t.s.tt.store(hash, bestMove, best, 0, flag, ply, raw, b.HalfmoveClock)
 	}
 	return best
 }

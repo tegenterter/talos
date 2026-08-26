@@ -146,3 +146,77 @@ func validate(b *Board, fen string) error {
 
 	return nil
 }
+
+// FEN renders b in Forsyth-Edwards notation, the inverse of ParseFEN.
+//
+// Written for callers that hand a position to something outside this program
+// — training data (internal/datagen), a test failure message, a debugging
+// session — rather than for the engine itself, which passes boards around
+// directly.
+func (b *Board) FEN() string {
+	var sb strings.Builder
+
+	for rank := 7; rank >= 0; rank-- {
+		empty := 0
+		for file := 0; file < 8; file++ {
+			c, pt, ok := b.PieceAt(Square(rank*8 + file))
+			if !ok {
+				empty++
+				continue
+			}
+			if empty > 0 {
+				sb.WriteByte(byte('0' + empty))
+				empty = 0
+			}
+			sb.WriteByte(fenPieceByte(c, pt))
+		}
+		if empty > 0 {
+			sb.WriteByte(byte('0' + empty))
+		}
+		if rank > 0 {
+			sb.WriteByte('/')
+		}
+	}
+
+	if b.SideToMove == White {
+		sb.WriteString(" w ")
+	} else {
+		sb.WriteString(" b ")
+	}
+
+	rights := ""
+	for _, r := range []struct {
+		bit  uint8
+		char byte
+	}{
+		{WhiteKingside, 'K'}, {WhiteQueenside, 'Q'},
+		{BlackKingside, 'k'}, {BlackQueenside, 'q'},
+	} {
+		if b.CastlingRights&r.bit != 0 {
+			rights += string(r.char)
+		}
+	}
+	if rights == "" {
+		rights = "-"
+	}
+	sb.WriteString(rights)
+
+	if b.EnPassant == NoSquare {
+		sb.WriteString(" -")
+	} else {
+		sb.WriteString(" " + b.EnPassant.String())
+	}
+
+	sb.WriteString(" " + strconv.Itoa(b.HalfmoveClock))
+	sb.WriteString(" " + strconv.Itoa(b.FullmoveNumber))
+	return sb.String()
+}
+
+// fenPieceByte is the FEN letter for a piece: uppercase for White.
+func fenPieceByte(c Color, pt PieceType) byte {
+	ch := "pnbrqk"[pt]
+	if c == White {
+		ch -= 'a' - 'A'
+	}
+	return ch
+}

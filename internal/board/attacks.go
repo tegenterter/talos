@@ -73,8 +73,11 @@ func slidingAttacks(sq Square, occ Bitboard, dirs [][2]int) Bitboard {
 	return attacks
 }
 
-func bishopAttacks(sq Square, occ Bitboard) Bitboard { return slidingAttacks(sq, occ, bishopDirs) }
-func rookAttacks(sq Square, occ Bitboard) Bitboard   { return slidingAttacks(sq, occ, rookDirs) }
+// bishopAttacks and rookAttacks are magic-bitboard lookups (magic.go), not
+// ray walks. slidingAttacks above is what builds those tables and remains
+// the definition of correctness they are tested against.
+func bishopAttacks(sq Square, occ Bitboard) Bitboard { return bishopAttacksMagic(sq, occ) }
+func rookAttacks(sq Square, occ Bitboard) Bitboard   { return rookAttacksMagic(sq, occ) }
 
 // KnightAttacks returns the squares a knight on sq attacks.
 func KnightAttacks(sq Square) Bitboard { return knightAttacks[sq] }

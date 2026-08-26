@@ -51,19 +51,98 @@ type layer struct {
 	in, out int
 	biases  []int32
 	weights []int8
+	// weightsT is weights transposed to column-major (weightsT[c*out+r] ==
+	// weights[r*in+c]), built once at load time for the layers evaluated
+	// sparsely — see forwardSparseInto. Nil for the layers that aren't.
+	weightsT []int8
 }
 
-func (l *layer) forward(in []int8) []int32 {
-	out := make([]int32, l.out)
+// transpose fills weightsT, which is what lets a column (one input's weights
+// across every output) be read contiguously.
+func (l *layer) transpose() {
+	l.weightsT = make([]int8, len(l.weights))
 	for r := 0; r < l.out; r++ {
-		sum := l.biases[r]
-		row := l.weights[r*l.in : r*l.in+l.in]
-		for c, x := range in {
-			sum += int32(row[c]) * int32(x)
+		for c := 0; c < l.in; c++ {
+			l.weightsT[c*l.out+r] = l.weights[r*l.in+c]
 		}
-		out[r] = sum
 	}
-	return out
+}
+
+// forwardInto computes this layer's affine transform into a caller-owned
+// destination, which must be l.out long. The evaluation path calls this
+// with stack arrays; allocating the output here instead put three
+// allocations per evaluation through the garbage collector, and this is the
+// hottest function in the engine (a third of all CPU) so it is also written
+// for the compiler rather than for looks:
+//
+//   - `row = row[:len(in)]` gives the bounds-check eliminator a length it
+//     can prove, removing a check per multiply-add;
+//   - four independent accumulators let the CPU overlap four multiply-adds
+//     instead of serializing on one dependency chain.
+//
+// Both are portable Go — this package deliberately has no assembly, so the
+// only speed available here is what the compiler can be persuaded to emit.
+// forwardSparseInto is forwardInto for the first layer, whose input is the
+// feature transformer's ClippedReLU output and is mostly zeros: a zero input
+// contributes nothing to any output, so its whole column can be skipped
+// rather than multiplied by 32 weights. It takes the raw accumulator and the
+// column offset of the perspective it holds (0 for the side to move, 256 for
+// the opponent), applying the activation itself — see the loop below.
+//
+// out must already hold the layer's biases; the caller adds both
+// perspectives into the same accumulation.
+//
+// Measured over random positions, 81% of the values reaching this layer are
+// zero — the feature transformer's ClippedReLU floors at zero and most
+// features simply do not fire — so this does roughly a fifth of the dense
+// version's arithmetic. That is worth restructuring the weights for, and it
+// is the kind of win available in portable Go where SIMD is not: the dense
+// loop is already about as good as the compiler will make it, but the
+// cheapest multiply-add is the one not performed.
+func (l *layer) forwardSparseInto(acc []int16, colOffset int, out []int32) {
+	out = out[:l.out]
+
+	for i, v := range acc {
+		// clampFT(v) is zero for every v <= 0, so the accumulator can be
+		// read directly: no clamped copy of it has to be materialized, and
+		// the zero test that skips the column doubles as the activation's
+		// lower bound. Fusing the two removed a 512-element buffer and a
+		// clamp pass that was 8% of CPU on its own once the multiplies
+		// below got cheap enough for it to matter.
+		if v <= 0 {
+			continue
+		}
+		x := int32(v)
+		if x > ftScale {
+			x = ftScale
+		}
+		col := l.weightsT[(colOffset+i)*l.out:]
+		col = col[:len(out)]
+		for r, w := range col {
+			out[r] += int32(w) * x
+		}
+	}
+}
+
+func (l *layer) forwardInto(in []int8, out []int32) {
+	in = in[:l.in]
+	for r := 0; r < l.out; r++ {
+		row := l.weights[r*l.in:]
+		row = row[:len(in)]
+
+		var s0, s1, s2, s3 int32
+		c := 0
+		for ; c+4 <= len(in); c += 4 {
+			s0 += int32(row[c]) * int32(in[c])
+			s1 += int32(row[c+1]) * int32(in[c+1])
+			s2 += int32(row[c+2]) * int32(in[c+2])
+			s3 += int32(row[c+3]) * int32(in[c+3])
+		}
+		for ; c < len(in); c++ {
+			s0 += int32(row[c]) * int32(in[c])
+		}
+		out[r] = l.biases[r] + s0 + s1 + s2 + s3
+	}
 }
 
 // Network is a loaded, ready-to-evaluate HalfKP 256x2-32-32-1 NNUE network.
@@ -96,6 +175,11 @@ func Load(data []byte) (*Network, error) {
 
 	_ = r.u32() // network (layer stack) section hash
 	n.l1 = r.affineLayer(2*halfDimensions, hiddenDim)
+	// The first layer is 512x32 of the forward pass's 17,440 multiply-adds,
+	// i.e. essentially all of it, and its input is the feature transformer's
+	// ClippedReLU output — which is measurably ~81% zeros on real positions.
+	// Transposing lets forwardSparseInto skip those columns outright.
+	n.l1.transpose()
 	n.l2 = r.affineLayer(hiddenDim, hiddenDim)
 	n.out = r.affineLayer(hiddenDim, 1)
 

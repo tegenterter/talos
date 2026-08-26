@@ -2,11 +2,13 @@ package search
 
 import (
 	"context"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"talos/internal/board"
+	"talos/internal/nnue"
 	"talos/internal/tablebase"
 )
 
@@ -16,6 +18,8 @@ import (
 // the search or accessed atomically, so any number of goroutines may use it
 // concurrently.
 type searchCtx struct {
+	// net is the network this search evaluates with — see Options.Network.
+	net         *nnue.Network
 	tt          *transpositionTable
 	nodes       *atomic.Int64
 	ctx         context.Context
@@ -91,6 +95,50 @@ type thread struct {
 	killers [maxPly][2]board.Move
 	history [2][64][64]int
 
+	// acc[ply] is the NNUE accumulator for the position this thread is
+	// searching at that ply, maintained incrementally as moves are made
+	// rather than rebuilt at every leaf (see internal/nnue's Accumulator,
+	// and staticEval in evaluate.go). Like pathHashes it is a fixed array
+	// owned by one goroutine: a split copies the one entry the helper needs
+	// at handoff, so no two goroutines ever touch the same element.
+	//
+	// The invariant every call site below maintains: when negamax or
+	// quiescence is entered with a board at ply p, acc[p] describes that
+	// board. Break it anywhere and the search silently evaluates the wrong
+	// position — which is why golden_test.go's exact node counts are the
+	// real test of this code.
+	acc [accStackSize]nnue.Accumulator
+
+	// moveBuf[ply] is this thread's move-list storage for that ply, reused
+	// for every node it searches there. Move generation was two thirds of
+	// everything the engine allocated — a list per node, grown by append —
+	// and none of it outlives the node that made it. Owned per thread and
+	// indexed by ply for exactly the reason pathHashes and acc are: two
+	// concurrently-searching siblings must never write the same element.
+	moveBuf [accStackSize][maxMovesPerPosition]board.Move
+	// scoreBuf is orderMoves' scratch for one node's move scores. Unlike
+	// moveBuf it needs no per-ply copy: the scores are dead the moment the
+	// sort finishes, and orderMoves does not recurse.
+	scoreBuf [maxMovesPerPosition]int
+	// evalStack[ply] is the static evaluation of the position searched at
+	// that ply, or noEval where none was computed (in check, or too deep for
+	// any heuristic to want one). It exists for the improving flag below,
+	// which compares a node against the same side's position two plies
+	// earlier — the cheapest available answer to "is this going well?".
+	evalStack [accStackSize]int
+	// contHist is the continuation history (conthistory.go), and
+	// playedStack[ply] is the move made at that ply, which is what the plies
+	// below it condition on. Both are per-thread and owned by one goroutine,
+	// like the rest of the ordering state; contHist is a megabyte, which is
+	// why it is int16 rather than int.
+	contHist    continuationHistory
+	playedStack [accStackSize]playedMove
+	// quietBuf[ply] records the quiet moves searched at that ply, for the
+	// history malus applied when a later one cuts off. Bounded well below
+	// the move list's length on purpose: the moves that matter are the ones
+	// tried early, and capping it keeps the per-thread footprint small.
+	quietBuf [accStackSize][32]board.Move
+
 	// pathHashes holds the hash of every position on the line currently
 	// being searched, for in-search repetition detection. It is a fixed
 	// per-thread array indexed by an explicit length rather than a slice
@@ -102,6 +150,18 @@ type thread struct {
 	// to copy the live prefix once.
 	pathHashes [maxPly]uint64
 }
+
+// maxMovesPerPosition bounds a single position's move list. The most legal
+// moves any legal chess position is known to offer is 218; pseudo-legal
+// generation can offer a few more before the legality filter runs, so this
+// is rounded up with room to spare rather than sized to the record.
+const maxMovesPerPosition = 256
+
+// accStackSize bounds the accumulator stack: negamax stops recursing at
+// maxPly, and a quiescence excursion entered there can still run
+// maxQuiescencePly deeper, so that sum is the deepest ply any board is ever
+// evaluated at.
+const accStackSize = maxPly + maxQuiescencePly + 2
 
 // nodeCheckInterval throttles how often negamax/quiescence actually check
 // the clock/context/node-limit (via a bitmask on the shared node
@@ -198,7 +258,7 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 		t.selDepth = ply
 	}
 	if ply >= maxPly {
-		return staticEval(b)
+		return t.staticEval(b, ply)
 	}
 
 	// Mate distance pruning: a mate can never be reported faster than ply
@@ -269,8 +329,10 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 	alphaOrig := alpha
 	var ttMove board.Move
 	haveTTMove := false
+	cachedEval := noEval
 	if entry, ok := t.s.tt.probe(hash, ply); ok {
 		ttMove, haveTTMove = entry.move, true
+		cachedEval = entry.eval
 		// Same ply>0 restriction, and for the same reason, as the
 		// draw/tablebase checks above: the root always needs a move it
 		// actually searched this iteration, with a real reconstructed
@@ -281,27 +343,30 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 		// this depth just stored, and return here with *pv truncated to
 		// one move.
 		if ply > 0 && entry.depth >= depth {
+			// Adjusted to this node's fifty-move clock, which the hash does
+			// not include — see ttEntry.scoreAt.
+			score := entry.scoreAt(b.HalfmoveClock)
 			switch entry.flag {
 			case ttExact:
-				*pv = []board.Move{entry.move}
-				return entry.score
+				setTTPV(pv, entry.move)
+				return score
 			case ttLowerBound:
-				if entry.score > alpha {
-					alpha = entry.score
+				if score > alpha {
+					alpha = score
 				}
 			case ttUpperBound:
-				if entry.score < beta {
-					beta = entry.score
+				if score < beta {
+					beta = score
 				}
 			}
 			if alpha >= beta {
-				*pv = []board.Move{entry.move}
-				return entry.score
+				setTTPV(pv, entry.move)
+				return score
 			}
 		}
 	}
 
-	legalMoves := board.GenerateLegalMoves(b)
+	legalMoves := board.GenerateLegalMovesInto(b, t.moveBuf[ply][:])
 	kingSq := b.Pieces[b.SideToMove][board.King].LSB()
 	inCheck := board.IsSquareAttacked(b, kingSq, b.SideToMove.Opposite())
 
@@ -323,6 +388,39 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 		return t.quiescence(b, ply, 0, alpha, beta)
 	}
 
+	// The static evaluation, computed once for every heuristic below that
+	// wants it, and only at the depths where one does — an evaluation at
+	// every node would cost more than the pruning saves. In check it is
+	// meaningless (the side to move is under threat, not standing still) and
+	// none of these heuristics apply.
+	staticScore, haveStatic := 0, false
+	if !inCheck && depth <= evalNeededMaxDepth {
+		if cachedEval == noEval {
+			cachedEval = t.rawEval(b, ply)
+		}
+		staticScore, haveStatic = damp(cachedEval, b.HalfmoveClock), true
+	}
+	t.evalStack[ply] = noEval
+	if haveStatic {
+		t.evalStack[ply] = staticScore
+	}
+
+	// improving asks whether the side to move is better off than it was two
+	// plies ago — its own previous turn. It is the cheapest signal a search
+	// has for "is this line going my way", and it is what lets the pruning
+	// below distinguish a position that is quietly getting better (where a
+	// late quiet move is unlikely to be the point) from one that is going
+	// wrong (where it might be the only thing that saves it).
+	//
+	// Unknown counts as improving: in check there is no meaningful static
+	// score, and treating a missing comparison as "going badly" would apply
+	// the harsher pruning to exactly the tactical positions that least
+	// deserve it.
+	improving := true
+	if ply >= 2 && haveStatic && t.evalStack[ply-2] != noEval {
+		improving = staticScore >= t.evalStack[ply-2]
+	}
+
 	// Null-move pruning: if letting the opponent move twice in a row
 	// (i.e. we do nothing) still can't stop them failing to reach beta at
 	// a cheaper, reduced-depth search, our actual move can only be even
@@ -337,6 +435,13 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 		nullBoard := *b
 		nullBoard.SideToMove = b.SideToMove.Opposite()
 		nullBoard.EnPassant = board.NoSquare
+
+		// A null move moves no piece, so both perspectives' features are
+		// exactly the parent's; only whose turn it is changes, and
+		// EvaluateAcc takes that as an argument.
+		t.acc[ply+1] = t.acc[ply]
+		// ...and there is no move for the plies below to condition on.
+		t.clearPlayed(ply)
 
 		var discardedPV []board.Move
 		// pathLen is passed through unchanged: a null move doesn't reach a
@@ -387,6 +492,7 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 	}
 
 	cutoff := false
+	quietCount := 0
 	for i, move := range ordered {
 		// "Young brothers wait": never split before the eldest sibling has
 		// been searched. Its score is what sets alpha for everyone else, so
@@ -397,6 +503,9 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 				// Everything the helper needs from this thread is copied to
 				// it now, while this goroutine still owns it exclusively.
 				copy(helper.pathHashes[:pathLen+1], t.pathHashes[:pathLen+1])
+				// The helper makes its move from this node's board, so it
+				// needs this node's accumulator to update from.
+				helper.acc[ply] = t.acc[ply]
 				helper.sp = sp
 				helper.cut = false
 				helper.aborted = t.s.stopped.Load()
@@ -414,7 +523,7 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 					a := int(sp.alpha.Load())
 
 					var childPV []board.Move
-					score := helper.searchChild(b, move, i, depth, ply, a, beta, inCheck, childPathLen, &childPV)
+					score := helper.searchChild(b, move, i, depth, ply, a, beta, inCheck, improving, childPathLen, &childPV)
 					siblings[i] = siblingResult{
 						searched: true,
 						usable:   !helper.aborted && !helper.cut,
@@ -437,8 +546,13 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 			t.s.rep.currMove(move, i+1, t.selDepth)
 		}
 
+		if !isCapture(b, move) && quietCount < len(t.quietBuf[ply]) {
+			t.quietBuf[ply][quietCount] = move
+			quietCount++
+		}
+
 		var childPV []board.Move
-		score := t.searchChild(b, move, i, depth, ply, alpha, beta, inCheck, childPathLen, &childPV)
+		score := t.searchChild(b, move, i, depth, ply, alpha, beta, inCheck, improving, childPathLen, &childPV)
 		if t.aborted || t.cut {
 			return 0
 		}
@@ -474,8 +588,14 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 		}
 		if alpha >= beta {
 			if !isCapture(b, move) {
+				bonus := historyBonus(depth)
 				t.recordKiller(ply, move)
 				t.recordHistory(b.SideToMove, move, depth)
+				t.updateContHistory(b, move, ply, bonus)
+				// Every quiet searched before this one was tried and failed
+				// to cut off; say so, or the tables record only that a move
+				// once worked and never that it since stopped working.
+				t.penalizeSearchedQuiets(b, ply, quietCount, move, depth)
 			}
 			cutoff = true
 			if sp != nil {
@@ -543,9 +663,45 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 	case bestScore >= beta:
 		flag = ttLowerBound
 	}
-	t.s.tt.store(hash, bestMove, bestScore, depth, flag, ply)
+	// noEval: a node searched to depth never needed a static evaluation, so
+	// there is none to cache here. store keeps whatever evaluation the entry
+	// already carried.
+	t.s.tt.store(hash, bestMove, bestScore, depth, flag, ply, noEval, b.HalfmoveClock)
 
 	return bestScore
+}
+
+// setTTPV reports a transposition-table cutoff's single-move line, unless
+// the entry carries no move — quiescence stores a stand-pat cutoff with none,
+// since no move produced it, and reporting a zero Move would put "a1a1" in
+// the principal variation and in the ponder hint derived from it.
+func setTTPV(pv *[]board.Move, m board.Move) {
+	if m == (board.Move{}) {
+		*pv = nil
+		return
+	}
+	*pv = []board.Move{m}
+}
+
+// evalNeededMaxDepth is the deepest node that computes a static evaluation
+// for the pruning heuristics below. Past it none of them apply, and an
+// evaluation at every node would cost more than they save.
+// evalNeededMaxDepth is the deepest node that computes a static evaluation.
+// The only consumer left is the improving flag (which late move reductions
+// read), and reductions stop mattering below lmrMinDepth, so there is no
+// point evaluating deeper than the reductions reach.
+const evalNeededMaxDepth = 8
+
+// penalizeSearchedQuiets applies the history malus — in both the plain and
+// the continuation tables — to every quiet move tried at this node before
+// the one that cut off.
+func (t *thread) penalizeSearchedQuiets(b *board.Board, ply, quietCount int, cutMove board.Move, depth int) {
+	for _, m := range t.quietBuf[ply][:quietCount] {
+		if m != cutMove {
+			t.penalizeHistory(b.SideToMove, m, depth)
+			t.updateContHistory(b, m, ply, -historyBonus(depth))
+		}
+	}
 }
 
 // splitMinDepth is the shallowest remaining depth at which a node will
@@ -631,8 +787,10 @@ func (t *thread) releaseHelper(h *thread) { t.s.sem <- h }
 // from this node's point of view. It exists so the sequential path and the
 // helper path search a move in provably identical ways — the two differ
 // only in which thread runs this, and which alpha they were handed.
-func (t *thread) searchChild(b *board.Board, move board.Move, i, depth, ply, alpha, beta int, inCheck bool, childPathLen int, childPV *[]board.Move) int {
+func (t *thread) searchChild(b *board.Board, move board.Move, i, depth, ply, alpha, beta int, inCheck, improving bool, childPathLen int, childPV *[]board.Move) int {
 	child := board.MakeMove(*b, move)
+	t.s.net.Update(&t.acc[ply+1], &t.acc[ply], b, move, &child)
+	t.recordPlayed(b, move, ply)
 
 	ext := 0
 	childKingSq := child.Pieces[child.SideToMove][board.King].LSB()
@@ -645,7 +803,7 @@ func (t *thread) searchChild(b *board.Board, move board.Move, i, depth, ply, alp
 	reduction := 0
 	if lmrEnabled {
 		isKiller := ply < maxPly && (move == t.killers[ply][0] || move == t.killers[ply][1])
-		reduction = lmrReduction(depth, i, inCheck, givesCheck, isCapture(b, move), move.Promotion != board.NoPiece, isKiller)
+		reduction = lmrReduction(depth, i, inCheck, givesCheck, isCapture(b, move), move.Promotion != board.NoPiece, isKiller, improving, beta != alpha+1)
 	}
 
 	// Principal Variation Search, with LMR folded into the same ladder:
@@ -748,14 +906,63 @@ const (
 // extension instead; reducing an extended move would fight its own
 // extension) or already being in it (every reply matters when in check,
 // there's no "probably not the best move" to lean on).
-func lmrReduction(depth, index int, inCheck, givesCheck, capture, promotion, isKiller bool) int {
+func lmrReduction(depth, index int, inCheck, givesCheck, capture, promotion, isKiller, improving, pvNode bool) int {
 	if depth < lmrMinDepth || index < lmrMinMoveIndex || inCheck || givesCheck || capture || promotion || isKiller {
 		return 0
 	}
-	if depth >= 6 && index >= 6 {
-		return 2
+
+	r := int(lmrTable[minInt(depth, maxPly-1)][minInt(index, maxMovesPerPosition-1)])
+	if !improving {
+		// The position is going the wrong way, so a move this far down the
+		// list is even less likely to be what turns it around.
+		r++
 	}
-	return 1
+	if pvNode {
+		// A principal-variation node's score is the one everything else is
+		// measured against, so it is searched closer to full width.
+		r--
+	}
+	if r < 0 {
+		r = 0
+	}
+	// Never reduce into quiescence: the point of a reduced search is a
+	// cheaper verdict from the same kind of search, not a different one.
+	if r > depth-1 {
+		r = depth - 1
+	}
+	return r
+}
+
+// lmrTable[depth][index] is the base reduction, growing with the logarithm
+// of both — the standard shape, and a real change from the flat 1-2 plies
+// this used before. Flat reductions treat the 4th move at depth 4 like the
+// 30th at depth 20; the logarithms say the second deserves far more
+// scepticism than the first, which is what lets a deep search cut its late
+// moves hard without gutting the shallow ones.
+var lmrTable [maxPly][maxMovesPerPosition]int8
+
+func init() {
+	for d := 1; d < maxPly; d++ {
+		for i := 1; i < maxMovesPerPosition; i++ {
+			lmrTable[d][i] = int8(lmrBase + math.Log(float64(d))*math.Log(float64(i))/lmrDivisor)
+		}
+	}
+}
+
+// lmrBase and lmrDivisor shape the table above. Conventional starting
+// values; tuning them means SPRT, not intuition.
+const (
+	lmrBase    = 0.75
+	lmrDivisor = 2.25
+)
+
+// minInt keeps the table lookups in range without pulling in generics for
+// two call sites.
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // tbWinScore is the score magnitude a tablebase-confirmed win at ply 0

@@ -3,6 +3,7 @@ package nnue
 import (
 	_ "embed"
 	"fmt"
+	"os"
 
 	"talos/internal/board"
 )
@@ -36,6 +37,35 @@ var DefaultNetwork = func() *Network {
 // scoring convention.
 func Evaluate(b *board.Board) int {
 	return DefaultNetwork.Evaluate(b)
+}
+
+// Refresh, Update and EvaluateAcc are DefaultNetwork's incremental
+// accumulator API (see accumulator.go), which is what internal/search's hot
+// path uses; Evaluate above stays the from-scratch entry point for callers
+// with no accumulator to maintain.
+func Refresh(a *Accumulator, b *board.Board) { DefaultNetwork.Refresh(a, b) }
+
+func Update(dst, src *Accumulator, before *board.Board, m board.Move, after *board.Board) {
+	DefaultNetwork.Update(dst, src, before, m, after)
+}
+
+func EvaluateAcc(a *Accumulator, stm board.Color) int { return DefaultNetwork.EvaluateAcc(a, stm) }
+
+// LoadFile reads a network from disk, for the UCI "EvalFile" option — the
+// engine ships with the embedded network above and plays with it unless a
+// caller points it at another. It is what makes training a network usable:
+// a candidate has to be playable without rebuilding the engine, or every
+// iteration of the training loop costs a compile.
+func LoadFile(path string) (*Network, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("nnue: reading %s: %w", path, err)
+	}
+	n, err := Load(data)
+	if err != nil {
+		return nil, fmt.Errorf("nnue: parsing %s: %w", path, err)
+	}
+	return n, nil
 }
 
 // Explain breaks down b's evaluation per piece using DefaultNetwork. See

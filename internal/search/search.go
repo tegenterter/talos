@@ -57,6 +57,7 @@ import (
 	"time"
 
 	"talos/internal/board"
+	"talos/internal/nnue"
 	"talos/internal/tablebase"
 )
 
@@ -64,9 +65,22 @@ import (
 // single-threaded with DefaultMaxTime, DefaultHashMB, and no progress
 // reporting.
 type Options struct {
-	// MaxTime bounds how long Search may run. Ignored if Infinite or
+	// MaxTime bounds how long Search may run — the hard deadline, which
+	// aborts an iteration already under way. Ignored if Infinite or
 	// MaxIterations > 0.
 	MaxTime time.Duration
+	// SoftTime, if positive, is what this move is *meant* to cost, with
+	// MaxTime as the ceiling it may reach when the search asks for more.
+	// The search declines to begin an iteration it cannot finish inside the
+	// soft budget, and scales that budget by how settled the search looks:
+	// a root move that keeps changing, or a score that is falling, buys
+	// more time, while a move that has been stable for several iterations
+	// gives time back to later moves in the game.
+	//
+	// Zero means "no separate soft budget" — the search then treats MaxTime
+	// as both, which is what a "go movetime" wants: an instruction to
+	// search for a stated duration, not a budget to manage.
+	SoftTime time.Duration
 	// MaxIterations, if positive, is a total node budget shared across
 	// all threads instead of a time limit (e.g. for UCI's "go nodes").
 	// Ignored if Infinite.
@@ -129,6 +143,12 @@ type Options struct {
 	// actually repeat. The slice is not modified, and is only read during
 	// the search.
 	GameHistory []uint64
+	// Network, if set, is the NNUE network the search evaluates with. Nil
+	// means nnue.DefaultNetwork, the one embedded in the binary. It is
+	// carried per search rather than read from a global so that swapping
+	// networks (UCI's "EvalFile") cannot race a search already running on
+	// the old one — the same reasoning as Table above.
+	Network *nnue.Network
 	// Tablebase, if set, is probed for WDL (win/draw/loss) knowledge at
 	// every non-root node reached during search — see negamax.go. Nil
 	// means no tablebase probing, regardless of what's loaded into it
@@ -180,6 +200,109 @@ const DefaultInfoInterval = 1 * time.Second
 // iteration that is merely unlikely to finish is a real cost; skipping one
 // that provably cannot finish is free, and only the latter is done here.
 const iterationGrowthFactor = 2.5
+
+// softBudget is how long the search is willing to keep starting new
+// iterations for, given the target spend and how settled the search looks.
+// It never exceeds the hard deadline, which remains the real limit.
+//
+// Two signals, both cheap and both standard:
+//
+//   - A root move that has survived several iterations unchanged is
+//     unlikely to change now, so the time set aside for this move is worth
+//     more to a later one. Each stable iteration shaves a little off,
+//     down to a floor.
+//   - A score that just fell is the opposite: something the previous
+//     iteration liked has stopped working, and that is exactly the moment
+//     an extra ply is worth paying for.
+//
+// The scaling is deliberately gentle. Time management is the one part of a
+// search where being clever has a long history of backfiring — this
+// engine's own record includes a fixed-fraction rule that cost about 230
+// Elo (see iterationGrowthFactor) and a prediction bias that quietly threw
+// away five plies (see growthFactor) — so both factors are bounded, and the
+// hard deadline bounds them again.
+func softBudget(soft, hard time.Duration, stableIterations, scoreDrop int) time.Duration {
+	if soft <= 0 || soft >= hard {
+		// No separate soft budget (a "go movetime", or a caller that only
+		// set MaxTime): the hard deadline is the only limit there is.
+		return hard
+	}
+
+	factor := 1.0
+	if stableIterations > stabilityIterationsForFullDiscount {
+		stableIterations = stabilityIterationsForFullDiscount
+	}
+	factor -= stabilityDiscountPerIteration * float64(stableIterations)
+	if scoreDrop >= fallingScoreThreshold {
+		// Bounded at twice the threshold's worth of extension, so a single
+		// catastrophic-looking iteration cannot consume the whole clock.
+		extra := float64(scoreDrop) / float64(fallingScoreThreshold)
+		if extra > 2 {
+			extra = 2
+		}
+		factor += fallingScoreExtension * extra
+	}
+
+	budget := time.Duration(float64(soft) * factor)
+	if budget > hard {
+		return hard
+	}
+	return budget
+}
+
+// Time-management scaling constants. Conventional, gentle values; tuning
+// them means SPRT at a real time control, never st= (see CLAUDE.md).
+const (
+	stabilityIterationsForFullDiscount = 5
+	stabilityDiscountPerIteration      = 0.06
+	fallingScoreThreshold              = 50
+	fallingScoreExtension              = 0.3
+)
+
+// growthFactor predicts how much more the next iteration will cost than the
+// one just finished. It believes the search over the constant: if the last
+// two iterations grew faster than iterationGrowthFactor, the next one is
+// predicted to grow at that measured rate instead.
+//
+// The constant alone is not conservative enough where it matters. This
+// engine's own doc note recorded the case: startpos depth 10 cost 4.9x depth
+// 9, so at depth 9 a 2.5x prediction says "there is time" and the search
+// begins an iteration it cannot finish, throwing away everything spent on
+// it — up to the entire remainder of the move's budget. That is not a
+// hypothetical either; it is what TestSoftTimeLimitStopsEarly caught, and it
+// got worse as the engine got faster and reached the steep depths sooner.
+//
+// Only the upward direction is trusted. A pair of iterations that grew
+// slowly says little — the early ones are noisy and often nearly free — so
+// the constant remains the floor.
+//
+// The measured ratio is used as-is, with no safety bias on top. Biasing it
+// upward is the obvious next thought — iterations do not grow smoothly (on
+// startpos at a 2s budget they grew 0.71x, then 3.11x, then 3.71x) and the
+// failure directions are not symmetric — but it was tried at 1.15x and 1.3x
+// and measured, and it loses depth for time the engine does not need to
+// save. Across twelve searches over four positions at three budgets:
+//
+//	constant only    total depth 134 in 8091ms
+//	measured ratio   total depth 132 in 7345ms
+//	measured x1.15   total depth 132 in 7353ms
+//	measured x1.30   total depth 129 in 5667ms
+//
+// The bias buys back time by skipping iterations that would have finished,
+// which is exactly the failure a soft limit is supposed to avoid, and is
+// the same trap the fixed-fraction rule fell into (see above: it cost about
+// 230 Elo). The measured ratio alone loses two plies against never adapting
+// at all while returning 9% sooner, and avoids the pathological case where
+// the search burns a whole budget on an iteration it cannot finish.
+func growthFactor(prev, last time.Duration) float64 {
+	if prev <= 0 || last <= 0 {
+		return iterationGrowthFactor
+	}
+	if observed := float64(last) / float64(prev); observed > iterationGrowthFactor {
+		return observed
+	}
+	return iterationGrowthFactor
+}
 
 // repeatableHistory trims a game's position hashes to the suffix that can
 // still repeat: only the moves since the last irreversible one (a capture or
@@ -256,7 +379,13 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 
 	// Everything the threads share, built once. Each thread then carries
 	// only its own move-ordering heuristics and search path (see thread).
+	net := opts.Network
+	if net == nil {
+		net = nnue.DefaultNetwork
+	}
+
 	sc := &searchCtx{
+		net:           net,
 		tt:            tt,
 		nodes:         &nodes,
 		ctx:           ctx,
@@ -306,13 +435,22 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 	}
 
 	t := &thread{s: sc, driver: true}
+	// Seed the accumulator stack for the root. Every deeper ply is derived
+	// from this one by nnue.Update as moves are made (see thread.acc);
+	// helpers are seeded from their split point's entry instead.
+	net.Refresh(&t.acc[0], &root)
 
 	var best result
 	var prevScore int
 	haveScore := false
-	// How long the most recently completed iteration took, used to predict
-	// the next one's cost for the soft limit below.
-	var lastIteration time.Duration
+	// How long the two most recently completed iterations took, used to
+	// predict the next one's cost for the soft limit below.
+	var lastIteration, prevIteration time.Duration
+	// How settled the search looks, feeding softBudget below: how many
+	// consecutive iterations have agreed on the root move, and how far the
+	// score fell in the most recent one.
+	stableIterations, scoreDrop := 0, 0
+	var stableMove board.Move
 
 	for depth := 1; depth <= maxDepth; depth++ {
 		// Soft limit: don't *start* an iteration there isn't realistically
@@ -322,8 +460,8 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 		// governs aborting an iteration already under way.
 		if timeLimited && depth > 1 {
 			elapsed := time.Since(start)
-			predicted := time.Duration(float64(lastIteration) * iterationGrowthFactor)
-			if elapsed+predicted > maxTime {
+			predicted := time.Duration(float64(lastIteration) * growthFactor(prevIteration, lastIteration))
+			if elapsed+predicted > softBudget(opts.SoftTime, maxTime, stableIterations, scoreDrop) {
 				break
 			}
 		}
@@ -350,9 +488,20 @@ func Search(root board.Board, opts Options) (board.Move, bool) {
 		if t.aborted {
 			break // discard this incomplete depth; keep the previous one
 		}
+		if len(pv) > 0 {
+			if haveScore && pv[0] == stableMove {
+				stableIterations++
+			} else {
+				stableIterations, stableMove = 0, pv[0]
+			}
+		}
+		if haveScore {
+			scoreDrop = prevScore - score
+		}
+
 		best = result{score: score, depth: depth, selDepth: t.selDepth, pv: pv}
 		prevScore, haveScore = score, true
-		lastIteration = time.Since(iterationStart)
+		prevIteration, lastIteration = lastIteration, time.Since(iterationStart)
 
 		sc.rep.complete(best.depth, best.selDepth, best.score, best.pv)
 	}

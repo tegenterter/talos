@@ -261,7 +261,7 @@ func TestBuildGoOptionsInfinite(t *testing.T) {
 func TestBuildGoOptionsUsesClockForSideToMove(t *testing.T) {
 	white := board.StartingBoard() // White to move
 	opts, _, _, _ := buildGoOptions(&white, []string{"wtime", "60000", "btime", "1000", "movestogo", "20"})
-	if want := allocateTime(60000, 0, 20); opts.MaxTime != want {
+	if _, want := allocateTime(60000, 0, 20); opts.MaxTime != want {
 		t.Errorf("White MaxTime = %v, want %v (from wtime)", opts.MaxTime, want)
 	}
 
@@ -270,7 +270,7 @@ func TestBuildGoOptionsUsesClockForSideToMove(t *testing.T) {
 		t.Fatalf("ParseFEN: %v", err)
 	}
 	opts, _, _, _ = buildGoOptions(&black, []string{"wtime", "60000", "btime", "1000", "movestogo", "20"})
-	if want := allocateTime(1000, 0, 20); opts.MaxTime != want {
+	if _, want := allocateTime(1000, 0, 20); opts.MaxTime != want {
 		t.Errorf("Black MaxTime = %v, want %v (from btime)", opts.MaxTime, want)
 	}
 }
@@ -281,7 +281,7 @@ func TestBuildGoOptionsPonderBudget(t *testing.T) {
 	if !ponder {
 		t.Fatal("ponder = false, want true")
 	}
-	if want := allocateTime(10000, 0, 10); budget != want {
+	if want, _ := allocateTime(10000, 0, 10); budget != want {
 		t.Errorf("ponderBudget = %v, want %v", budget, want)
 	}
 
@@ -313,8 +313,18 @@ func TestAllocateTime(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := allocateTime(c.remaining, c.inc, c.mtg); got != c.want {
-				t.Errorf("allocateTime(%d, %d, %d) = %v, want %v", c.remaining, c.inc, c.mtg, got, c.want)
+			got, hard := allocateTime(c.remaining, c.inc, c.mtg)
+			if got != c.want {
+				t.Errorf("allocateTime(%d, %d, %d) target = %v, want %v", c.remaining, c.inc, c.mtg, got, c.want)
+			}
+			// The hard cap is what a move may spend when the search asks
+			// for it: never below the target, and never into the clock's
+			// safety buffer.
+			if hard < got {
+				t.Errorf("allocateTime(%d, %d, %d) hard cap %v is below the target %v", c.remaining, c.inc, c.mtg, hard, got)
+			}
+			if usable := time.Duration(c.remaining-timeSafetyBufferMs) * time.Millisecond; c.remaining > 0 && hard > usable {
+				t.Errorf("allocateTime(%d, %d, %d) hard cap %v exceeds the usable clock %v", c.remaining, c.inc, c.mtg, hard, usable)
 			}
 		})
 	}

@@ -3,7 +3,6 @@ package search
 import (
 	"talos/internal/board"
 	"talos/internal/eval"
-	"talos/internal/nnue"
 )
 
 // staticEval is the search's one entry point to a static evaluation. It
@@ -11,7 +10,21 @@ import (
 // result by the fifty-move clock. Every leaf in negamax and quiescence goes
 // through here; mate and tablebase scores deliberately do not, since
 // neither is an evaluation of a position's features.
-func staticEval(b *board.Board) int {
+//
+// ply selects this thread's accumulator for b (see thread.acc): the network
+// is evaluated from features maintained incrementally as moves were made,
+// not rebuilt here. b and ply must describe the same position — every call
+// site is a leaf of a search that has been maintaining exactly that.
+func (t *thread) staticEval(b *board.Board, ply int) int {
+	return damp(t.rawEval(b, ply), b.HalfmoveClock)
+}
+
+// rawEval is staticEval without the fifty-move damping. Split out because
+// that is the form the transposition table stores (see ttEntry.eval): the
+// clock is not part of a position's hash, so an entry shared between two
+// clocks must carry the undamped value, with damping applied when it is
+// read back.
+func (t *thread) rawEval(b *board.Board, ply int) int {
 	if eval.InsufficientMaterial(b) {
 		// Neither side can force mate, so the position is drawn no matter
 		// what either evaluator makes of the pieces on it. Checked ahead of
@@ -20,13 +33,13 @@ func staticEval(b *board.Board) int {
 		return 0
 	}
 
-	v := nnue.Evaluate(b)
+	v := t.s.net.EvaluateAcc(&t.acc[ply], b.SideToMove)
 	if eval.Lopsided(b) {
 		// A won-on-technique endgame, where the network is measurably
 		// unreliable and has no gradient toward the win — see internal/eval.
 		v = eval.Evaluate(b)
 	}
-	return damp(v, b.HalfmoveClock)
+	return v
 }
 
 // damp scales an evaluation down as the fifty-move clock runs up: the score
@@ -66,5 +79,11 @@ func damp(v, halfmoveClock int) int {
 	if halfmoveClock > 100 {
 		halfmoveClock = 100
 	}
-	return v * (200 - halfmoveClock) / 200
+	return v * (dampDenominator - halfmoveClock) / dampDenominator
 }
+
+// dampDenominator is damp's scale: the score is multiplied by
+// (dampDenominator - clock) / dampDenominator, so 200 halves it by the time
+// the clock reaches 100. ttEntry.scoreAt reuses it to move a stored score
+// between clocks.
+const dampDenominator = 200

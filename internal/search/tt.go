@@ -1,6 +1,7 @@
 package search
 
 import (
+	"math"
 	"sync"
 
 	"talos/internal/board"
@@ -30,7 +31,72 @@ type ttEntry struct {
 	score int
 	depth int
 	flag  ttFlag
+	// eval is the position's static evaluation *before* the fifty-move
+	// damping in evaluate.go, or noEval if none was stored. Undamped
+	// deliberately: board.Board.Hash() excludes the halfmove clock, so two
+	// positions sharing an entry can be at different clocks, and a damped
+	// score reused at the wrong one would be wrong by an unbounded amount.
+	// Damping is applied at the point of use instead, which costs a
+	// multiply and is always right.
+	eval int
+	// clock is the halfmove clock of the position this entry was stored
+	// from, saturated at 100. score depends on it — every leaf under the
+	// node was damped by the fifty-move rule (evaluate.go) — while the hash
+	// deliberately does not include it, so an entry reached at a different
+	// clock carries a score that is simply wrong: it was computed for a
+	// position that was further from, or closer to, a draw claim than this
+	// one is. The move and eval stay usable regardless; only the score is
+	// gated. See scoreValidAt.
+	clock int
 }
+
+// scoreAt returns this entry's score as it applies at the given halfmove
+// clock, rescaling it if the entry was stored at a different one.
+//
+// The problem this solves is not hypothetical: storing quiescence results
+// without accounting for the clock cost the engine its basic mates outright.
+// In a shuffling endgame the same position recurs constantly at a rising
+// clock, and a score cached early stopped the search seeing the evaluation
+// decay that drives it to make progress — KQ vs K and KBN vs K both went
+// from mating to shuffling out the fifty-move rule, caught by
+// TestConvertsBasicMates.
+//
+// Rescaling rather than discarding the entry is what keeps the table useful
+// in exactly those endgames: refusing every clock-mismatched score was tried
+// first and made KQ vs K take eight times as long to convert, because in a
+// shuffle no two visits to a position ever share a clock. The arithmetic is
+// exact for a stand-pat entry (its score *is* a damped evaluation) and an
+// approximation for a searched one, whose leaves were damped at clocks a few
+// plies either side of the node's — far closer to right than either extreme.
+//
+// Mate scores are returned untouched: they are not evaluations and were
+// never damped.
+func (e ttEntry) scoreAt(clock int) int {
+	if e.score >= mateThreshold || e.score <= -mateThreshold {
+		return e.score
+	}
+	from, to := e.clock, saturateClock(clock)
+	if from == to {
+		return e.score
+	}
+	return e.score * (dampDenominator - to) / (dampDenominator - from)
+}
+
+// saturateClock caps a halfmove clock at the point damping stops changing,
+// so positions past it share entries instead of splitting them pointlessly.
+func saturateClock(clock int) int {
+	if clock > 100 {
+		return 100
+	}
+	if clock < 0 {
+		return 0
+	}
+	return clock
+}
+
+// noEval marks an entry that carries no static evaluation — every entry
+// stored from a node that never needed one, which is most of them.
+const noEval = math.MinInt32
 
 // ttShards splits the table into independently-locked shards so many
 // search threads probing/storing concurrently don't all contend on one
@@ -152,7 +218,7 @@ func (t *transpositionTable) probe(hash uint64, ply int) (ttEntry, bool) {
 // "depth-preferred" replacement policy: deeper results are more
 // trustworthy and more expensive to recompute; an equal-depth result still
 // overwrites, so the table's occupant for a given depth stays fresh).
-func (t *transpositionTable) store(hash uint64, move board.Move, score, depth int, flag ttFlag, ply int) {
+func (t *transpositionTable) store(hash uint64, move board.Move, score, depth int, flag ttFlag, ply, eval, clock int) {
 	shard := t.shardFor(hash)
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
@@ -161,12 +227,20 @@ func (t *transpositionTable) store(hash uint64, move board.Move, score, depth in
 	if e.hash == hash && e.depth > depth {
 		return
 	}
+	// An entry being replaced by one that carries no evaluation keeps the
+	// evaluation it already had: it describes the same position (the hash
+	// matched), and recomputing it later costs a full network pass.
+	if eval == noEval && e.hash == hash && e.eval != noEval {
+		eval = e.eval
+	}
 	*e = ttEntry{
 		hash:  hash,
 		move:  move,
 		score: adjustMateScoreToTT(score, ply),
 		depth: depth,
 		flag:  flag,
+		eval:  eval,
+		clock: saturateClock(clock),
 	}
 }
 

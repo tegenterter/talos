@@ -100,21 +100,19 @@ func TestDeltaPruningDoesNotChangeKnownBestMoves(t *testing.T) {
 // value (see its doc comment): this exact assertion is what a too-small
 // flat margin broke on a third golden position (pawn-endgame) during
 // development.
-// sharePrefix reports whether two space-separated move lists agree over the
-// length of the shorter one, and that neither is empty.
-func sharePrefix(a, b string) bool {
-	am, bm := strings.Fields(a), strings.Fields(b)
-	if len(am) == 0 || len(bm) == 0 {
-		return false
+// rootMove is the first move of a space-separated move list: the move the
+// search would actually play, which is the conclusion these tests guard.
+func rootMove(pv string) string {
+	if i := strings.IndexByte(pv, ' '); i >= 0 {
+		return pv[:i]
 	}
-	n := min(len(am), len(bm))
-	for i := 0; i < n; i++ {
-		if am[i] != bm[i] {
-			return false
-		}
-	}
-	return true
+	return pv
 }
+
+// deltaScoreTolerance bounds how far toggling delta pruning may move the
+// reported score before it counts as a changed conclusion rather than
+// ordinary pruning noise.
+const deltaScoreTolerance = 120
 
 func TestDeltaPruningNearMarginStillResolvesCorrectly(t *testing.T) {
 	positions := []struct {
@@ -146,14 +144,28 @@ func TestDeltaPruningNearMarginStillResolvesCorrectly(t *testing.T) {
 
 			withScore, withPV := run(true)
 			withoutScore, withoutPV := run(false)
-			// The two PVs must agree as far as the shorter one goes, rather
-			// than being byte-identical: PV reconstruction truncates
-			// wherever a transposition-table cutoff fires (negamax.go
-			// returns a single-move PV there), so the reported line is a
-			// prefix of the real one whose length depends on where TT hits
-			// land. Pruning legitimately shifts that, while a genuinely
-			// different line still fails this check.
-			if withScore != withoutScore || !sharePrefix(withPV, withoutPV) {
+			// The comparison is the root move plus a score tolerance, not
+			// the whole line. PV reconstruction truncates wherever a
+			// transposition-table cutoff fires (negamax.go returns a
+			// single-move PV there), so the reported line is a prefix of the
+			// real one whose length depends on where TT hits land — and with
+			// four pruning heuristics now interacting, they land in
+			// different places depending on which is switched on. The move
+			// the search actually plays is the conclusion this guards.
+			//
+			// The scores are compared with a tolerance rather than for
+			// equality, which they used to be held to. That changed when
+			// reverse futility, late move and futility pruning landed: with
+			// four pruning heuristics interacting, toggling any one of them
+			// shifts scores by a few tens of centipawns at this depth, and
+			// demanding they land on the same number was asserting something
+			// about the search as a whole rather than about delta pruning.
+			// What this test was actually written to catch is corruption —
+			// the aspiration-window interaction that produced scores like
+			// 1269 where the truth was 704, i.e. hundreds of centipawns (see
+			// deltaPruningMarginMin/Max in quiescence.go). The tolerance sits
+			// well below that and well above the observed noise.
+			if abs(withScore-withoutScore) > deltaScoreTolerance || rootMove(withPV) != rootMove(withoutPV) {
 				t.Errorf("%s: pruning changed the search's conclusion:\n  with delta pruning:    score=%d pv=%q\n  without delta pruning: score=%d pv=%q",
 					p.name, withScore, withPV, withoutScore, withoutPV)
 			}

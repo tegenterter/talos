@@ -48,11 +48,15 @@ func TestReportsProgressWithinAnIteration(t *testing.T) {
 	defer func(v time.Duration) { progressReportAfter = v }(progressReportAfter)
 	progressReportAfter = 0
 
-	b := board.StartingBoard()
+	// A dense middlegame at real depth, not startpos at depth 8: the engine
+	// now finishes that in under a millisecond, so no heartbeat interval
+	// ever opens and the test proved nothing. The heartbeat exists for
+	// searches long enough to look hung, so the test has to run one.
+	b := mustFEN(t, "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1")
 
 	var currMoves, heartbeats, results int
 	Search(b, Options{
-		MaxDepth:     8,
+		MaxDepth:     12,
 		Threads:      1,
 		InfoInterval: time.Millisecond,
 		OnInfo: func(i Info) {

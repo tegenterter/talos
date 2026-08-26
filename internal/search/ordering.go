@@ -1,8 +1,6 @@
 package search
 
 import (
-	"sort"
-
 	"talos/internal/board"
 )
 
@@ -86,22 +84,32 @@ const startingNonPawnMaterial = 2 * (2*320 + 2*330 + 2*500 + 900) // 6400
 // that share no work structure; it is given up here deliberately, to be
 // replaced by splitting the search tree across threads directly.
 func (t *thread) orderMoves(b *board.Board, moves []board.Move, ttMove board.Move, haveTTMove bool, ply int) []board.Move {
-	scores := make([]int, len(moves))
+	scores := t.scoreBuf[:len(moves)]
 	for i, m := range moves {
 		scores[i] = t.moveOrderScore(b, m, ttMove, haveTTMove, ply)
 	}
 
-	idx := make([]int, len(moves))
-	for i := range idx {
-		idx[i] = i
+	// Sorted in place, into the caller's own buffer, with a hand-written
+	// insertion sort rather than sort.SliceStable: this ran at every node
+	// and allocated three slices to do it (the scores, an index
+	// permutation, and the reordered result), while a stable sort's output
+	// is unique — so the same key produces the same permutation either way,
+	// and the golden baselines prove it. Move lists are short (rarely past
+	// 40) and already in memory, which is the regime insertion sort wins.
+	//
+	// Stability is not a nicety here: ties keep the move generator's natural
+	// order, which is what makes the search reproducible (see the package
+	// doc on determinism). The strict `<` below is what preserves it.
+	for i := 1; i < len(moves); i++ {
+		m, sc := moves[i], scores[i]
+		j := i - 1
+		for j >= 0 && scores[j] < sc {
+			moves[j+1], scores[j+1] = moves[j], scores[j]
+			j--
+		}
+		moves[j+1], scores[j+1] = m, sc
 	}
-	sort.SliceStable(idx, func(i, j int) bool { return scores[idx[i]] > scores[idx[j]] })
-
-	ordered := make([]board.Move, len(moves))
-	for i, j := range idx {
-		ordered[i] = moves[j]
-	}
-	return ordered
+	return moves
 }
 
 // Move-ordering score bands, highest priority first. Bands are spaced far
@@ -158,8 +166,29 @@ func (t *thread) moveOrderScore(b *board.Board, m board.Move, ttMove board.Move,
 			return orderScoreKiller2
 		}
 	}
-	return t.history[b.SideToMove][m.From][m.To]
+	// A quiet move's score is its plain history plus what the continuation
+	// tables make of it in this specific context (conthistory.go).
+	//
+	// The sum is allowed to go negative — a move the continuation tables
+	// have learned is bad *here* should sort below one they know nothing
+	// about, and clamping at zero throws that half of the signal away. It
+	// is bounded on both sides only to keep the bands in this function
+	// meaningful: a quiet move may not climb into the promotion band above,
+	// nor sink into the losing-capture band below.
+	score := t.history[b.SideToMove][m.From][m.To] + t.contHistScore(b, m, ply)
+	if score > maxHistory {
+		score = maxHistory
+	}
+	if score < minQuietScore {
+		score = minQuietScore
+	}
+	return score
 }
+
+// minQuietScore floors a quiet move's ordering score well clear of
+// orderScoreBadCapture, so even a thoroughly discredited quiet move is still
+// tried before a capture that simply loses material.
+const minQuietScore = orderScoreBadCapture / 2
 
 // recordKiller notes that m caused a beta cutoff at ply, so sibling
 // nodes at the same ply try it early too — cutoffs tend to recur at the
@@ -173,26 +202,58 @@ func (t *thread) recordKiller(ply int, m board.Move) {
 	t.killers[ply][0] = m
 }
 
-// recordHistory strengthens m's ordering score after it caused a cutoff,
-// weighted by depth² (a cutoff found deeper in the search — i.e. after
-// surviving more scrutiny — says more about the move's general quality
-// than one found near a leaf).
-// The score bands above assume a history value always stays below every band
-// that outranks a plain quiet move. decayHistory's halving is what makes that
-// true in practice, but "in practice" is not an invariant — it depends on
-// decay running often enough relative to how fast a hot entry grows.
-// maxHistory makes it structural instead: no history score can reach the
-// lowest band above quiets, whatever the search does, so move ordering cannot
-// silently invert. Anchored to orderScoreMinorPromo (not the killer bands)
-// because that is the lowest such band.
-const maxHistory = orderScoreMinorPromo - 1
+// Both history tables — this one and the continuation tables in
+// conthistory.go — share one scale, one bonus formula and one update rule.
+// They did not at first, and that is precisely why continuation history did
+// nothing when it landed: measured after a depth-8 search, plain history
+// entries reached the hundreds while continuation entries sat at a median of
+// -1 and a 90th percentile of 8, so summing them drowned the second in the
+// first. A continuation table is far sparser by construction (589,824
+// context-specific slots against 8,192), so each entry is updated far less
+// often and needs the same bonus to reach a comparable magnitude.
+//
+// maxHistory also keeps the ordering bands in moveOrderScore meaningful: no
+// history score can climb into the band above quiet moves, whatever the
+// search does, so ordering cannot silently invert.
+const maxHistory = 16384
 
-func (t *thread) recordHistory(color board.Color, m board.Move, depth int) {
-	h := &t.history[color][m.From][m.To]
-	*h += depth * depth
-	if *h > maxHistory {
-		*h = maxHistory
+// historyBonus is the credit a quiet move earns for causing a cutoff, and
+// the debit one takes for having been searched and failed to. It grows with
+// depth — a cutoff proven by a deeper search says more about the move than
+// one found near a leaf — and is bounded so a single deep node cannot
+// saturate an entry on its own.
+func historyBonus(depth int) int {
+	bonus := 16*depth*depth + 32*depth + 16
+	if bonus > maxHistoryBonus {
+		bonus = maxHistoryBonus
 	}
+	return bonus
+}
+
+const maxHistoryBonus = 1200
+
+// applyHistory is the shared update: history gravity, pulling each update
+// toward zero in proportion to how far the entry has already travelled. An
+// entry approaches the bound asymptotically instead of hitting it, and old
+// information fades continuously as new arrives — decay done per update
+// rather than by sweeping the table between iterations.
+func applyHistory(entry *int, bonus int) {
+	v := *entry
+	*entry = v + bonus - v*abs(bonus)/maxHistory
+}
+
+// recordHistory strengthens m's ordering score after it caused a cutoff.
+func (t *thread) recordHistory(color board.Color, m board.Move, depth int) {
+	applyHistory(&t.history[color][m.From][m.To], historyBonus(depth))
+}
+
+// penalizeHistory is recordHistory's opposite, applied to the quiet moves
+// that were searched at a node and failed to cut off while a later one
+// succeeded. Without it the table records only "this move cut off
+// somewhere", conflating a move that cuts off almost every time with one
+// that cut off once and has been tried fruitlessly ever since.
+func (t *thread) penalizeHistory(color board.Color, m board.Move, depth int) {
+	applyHistory(&t.history[color][m.From][m.To], -historyBonus(depth))
 }
 
 // decayHistory halves every history score. t.history otherwise only grows
@@ -211,4 +272,12 @@ func (t *thread) decayHistory() {
 			}
 		}
 	}
+}
+
+// abs is the small helper the gravity update needs.
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }

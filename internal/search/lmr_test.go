@@ -19,7 +19,7 @@ func TestLMRReductionExemptions(t *testing.T) {
 		qualifyingDepth = 6
 		qualifyingIndex = 6
 	)
-	if got := lmrReduction(qualifyingDepth, qualifyingIndex, false, false, false, false, false); got == 0 {
+	if got := lmrReduction(qualifyingDepth, qualifyingIndex, false, false, false, false, false, true, false); got == 0 {
 		t.Fatal("sanity check failed: the qualifying baseline itself returned 0")
 	}
 
@@ -38,7 +38,7 @@ func TestLMRReductionExemptions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := lmrReduction(tt.depth, tt.index, tt.inCheck, tt.givesCheck, tt.capture, tt.promotion, tt.isKiller); got != 0 {
+			if got := lmrReduction(tt.depth, tt.index, tt.inCheck, tt.givesCheck, tt.capture, tt.promotion, tt.isKiller, true, false); got != 0 {
 				t.Errorf("lmrReduction(depth=%d, index=%d, inCheck=%v, givesCheck=%v, capture=%v, promotion=%v, isKiller=%v) = %d, want 0",
 					tt.depth, tt.index, tt.inCheck, tt.givesCheck, tt.capture, tt.promotion, tt.isKiller, got)
 			}
@@ -48,43 +48,73 @@ func TestLMRReductionExemptions(t *testing.T) {
 
 // TestLMRReductionMagnitude pins down the actual reduction sizes for
 // qualifying (non-exempt) moves at various depth/index combinations.
+//
+// The reduction is a log table now (lmrTable), not the flat 1-2 plies these
+// cases used to pin, so what is checked here is the table's *shape*: a
+// reduction that grows with both depth and move index, and that grows fast
+// enough at depth to be worth having a table for at all.
 func TestLMRReductionMagnitude(t *testing.T) {
-	tests := []struct {
-		depth, index int
-		want         int
-	}{
-		{lmrMinDepth, lmrMinMoveIndex, 1}, // right at the threshold: the smaller reduction
-		{5, 5, 1},                         // qualifies, but not deep/late enough for the bigger tier
-		{6, 6, 2},                         // right at the bigger tier's threshold
-		{6, 5, 1},                         // deep enough, but not late enough
-		{5, 6, 1},                         // late enough, but not deep enough
-		{20, 20, 2},                       // well past both thresholds: still just the (capped) bigger tier
+	red := func(depth, index int) int {
+		return lmrReduction(depth, index, false, false, false, false, false, true, false)
 	}
-	for _, tt := range tests {
-		if got := lmrReduction(tt.depth, tt.index, false, false, false, false, false); got != tt.want {
-			t.Errorf("lmrReduction(depth=%d, index=%d, <none exempt>) = %d, want %d", tt.depth, tt.index, got, tt.want)
+
+	// Deeper and later must never reduce less than shallower and earlier.
+	for depth := lmrMinDepth; depth <= 30; depth++ {
+		for index := lmrMinMoveIndex; index <= 30; index++ {
+			if r, deeper := red(depth, index), red(depth+1, index); deeper < r {
+				t.Errorf("reduction fell with depth: (%d,%d)=%d but (%d,%d)=%d", depth, index, r, depth+1, index, deeper)
+			}
+			if r, later := red(depth, index), red(depth, index+1); later < r {
+				t.Errorf("reduction fell with move index: (%d,%d)=%d but (%d,%d)=%d", depth, index, r, depth, index+1, later)
+			}
 		}
+	}
+
+	// And it must actually scale: the old flat table capped at 2 plies, so a
+	// late move in a deep search was reduced no more than one in a shallow
+	// search. That is the whole thing this replaced.
+	if shallow, deep := red(lmrMinDepth, lmrMinMoveIndex), red(24, 24); deep <= shallow+1 {
+		t.Errorf("reduction at depth 24 / index 24 is %d against %d at the threshold; the table is not scaling", deep, shallow)
 	}
 }
 
-// TestLMRReductionNeverNegativeOrExcessive is a broad sweep guarding two
-// general properties no specific test case above pins down on its own:
-// the reduction is never negative (which would *increase* search depth,
-// nonsensical for "late move reduction"), and it never reduces a node
-// below quiescence-search territory in a way that would make depth go
-// more negative than the deepest tier (2) accounts for.
+// TestLMRIsGentlerOnPVNodesAndHarsherWhenNotImproving pins the two
+// adjustments: a principal-variation node's score is what everything else is
+// measured against, so it is searched closer to full width, while a position
+// going the wrong way gets its late quiet moves cut harder.
+func TestLMRIsGentlerOnPVNodesAndHarsherWhenNotImproving(t *testing.T) {
+	const depth, index = 12, 12
+	base := lmrReduction(depth, index, false, false, false, false, false, true, false)
+	pv := lmrReduction(depth, index, false, false, false, false, false, true, true)
+	notImproving := lmrReduction(depth, index, false, false, false, false, false, false, false)
+
+	if pv >= base {
+		t.Errorf("PV node reduced by %d, non-PV by %d; want the PV node reduced less", pv, base)
+	}
+	if notImproving <= base {
+		t.Errorf("not-improving reduced by %d, improving by %d; want not-improving reduced more", notImproving, base)
+	}
+}
+
+// TestLMRReductionNeverNegativeOrExcessive is a broad sweep guarding the two
+// properties that must hold whatever the table says: a reduction is never
+// negative (that would *increase* depth, which is not what "reduction"
+// means), and it never reduces a move into quiescence — the point of a
+// reduced search is a cheaper verdict from the same kind of search, not a
+// different one.
 func TestLMRReductionNeverNegativeOrExcessive(t *testing.T) {
-	for depth := 0; depth <= 30; depth++ {
-		for index := 0; index <= 30; index++ {
-			got := lmrReduction(depth, index, false, false, false, false, false)
-			if got < 0 {
-				t.Fatalf("lmrReduction(depth=%d, index=%d) = %d, want >= 0", depth, index, got)
-			}
-			if got > 2 {
-				t.Fatalf("lmrReduction(depth=%d, index=%d) = %d, want <= 2", depth, index, got)
-			}
-			if got > 0 && got >= depth {
-				t.Fatalf("lmrReduction(depth=%d, index=%d) = %d, would make the reduced search depth <= 0 before even accounting for the -1 ply every move already spends: that's more reduction than intended", depth, index, got)
+	for depth := 0; depth <= 40; depth++ {
+		for index := 0; index <= 40; index++ {
+			for _, improving := range []bool{true, false} {
+				for _, pv := range []bool{true, false} {
+					got := lmrReduction(depth, index, false, false, false, false, false, improving, pv)
+					if got < 0 {
+						t.Fatalf("lmrReduction(depth=%d, index=%d) = %d, want >= 0", depth, index, got)
+					}
+					if got > 0 && got >= depth {
+						t.Fatalf("lmrReduction(depth=%d, index=%d) = %d, which would search the move at depth <= 0 and drop it into quiescence", depth, index, got)
+					}
+				}
 			}
 		}
 	}

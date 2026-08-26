@@ -55,6 +55,13 @@ func run(in io.Reader, rawOut io.Writer) {
 	// search.Options.Tablebase nil and search runs exactly as it did
 	// before this option existed.
 	var tb *tablebase.Tablebase
+	// nil means play with the network embedded in the binary. A different
+	// one is loaded by "setoption name EvalFile", which is what makes a
+	// trained candidate testable without rebuilding the engine. Swapped by
+	// replacing this pointer, never by mutating a network in place: a
+	// search running in the background holds its own reference (see
+	// search.Options.Network), exactly as with the transposition table.
+	var net *nnue.Network
 
 	// State for whatever search is currently running in the background,
 	// guarded by mu since "stop"/"ponderhit"/"quit"/a new "go" can arrive
@@ -86,6 +93,7 @@ func run(in io.Reader, rawOut io.Writer) {
 			fmt.Fprintf(out, "option name Threads type spin default 1 min %d max %d\n", minThreads, maxThreads)
 			fmt.Fprintf(out, "option name Hash type spin default %d min %d max %d\n", search.DefaultHashMB, minHashMB, maxHashMB)
 			fmt.Fprintln(out, "option name SyzygyPath type string default <empty>")
+			fmt.Fprintln(out, "option name EvalFile type string default <embedded>")
 			fmt.Fprintln(out, "uciok")
 		case "isready":
 			// Answered immediately even mid-search, per the UCI spec:
@@ -116,6 +124,8 @@ func run(in io.Reader, rawOut io.Writer) {
 				}
 			case "SyzygyPath":
 				tb = loadTablebase(out, value)
+			case "EvalFile":
+				net = loadNetwork(out, value)
 			}
 			// Any other option name is ignored per the UCI spec (this
 			// engine declares nothing else configurable).
@@ -180,6 +190,7 @@ func run(in io.Reader, rawOut io.Writer) {
 			opts.Table = tt
 			opts.GameHistory = gameHistory
 			opts.Tablebase = tb
+			opts.Network = net
 
 			boardCopy := b
 			wg.Add(1)
@@ -408,12 +419,15 @@ func buildGoOptions(b *board.Board, args []string) (opts search.Options, infinit
 		// their own; a clock (wtime/btime) given alongside one of them is
 		// ignored in favor of the more specific instruction.
 	case haveWtime || haveBtime:
-		opts.MaxTime = allocateTime(remaining, inc, movestogo)
+		// Two limits, not one: SoftTime is what this move is meant to cost,
+		// MaxTime what it may cost if the search asks for more (see
+		// search.Options.SoftTime).
+		opts.SoftTime, opts.MaxTime = allocateTime(remaining, inc, movestogo)
 	}
 
 	if ponder {
 		if haveWtime || haveBtime {
-			ponderBudget = allocateTime(remaining, inc, movestogo)
+			ponderBudget, _ = allocateTime(remaining, inc, movestogo)
 		} else {
 			ponderBudget = search.DefaultMaxTime
 		}
@@ -526,14 +540,21 @@ const (
 	assumedMovesToGo   = 30
 	timeSafetyBufferMs = 50
 	minMoveTimeMs      = 10
+	// hardTimeMultiple is how far past the target spend a single move may
+	// go when the search asks for it — see search.Options.SoftTime. The
+	// target is what the engine intends to spend on an average move; the
+	// hard cap is what it is allowed to spend on a move that turns out to
+	// matter, and the difference is only ever taken from later moves in the
+	// same game, never from the clock's safety buffer.
+	hardTimeMultiple = 3
 )
 
 // allocateTime turns a clock (remaining time, increment, moves to the
 // next time control — all in milliseconds, 0 movesToGo meaning "unknown,
 // sudden death") into a budget for the current move.
-func allocateTime(remainingMs, incMs, movesToGo int) time.Duration {
+func allocateTime(remainingMs, incMs, movesToGo int) (soft, hard time.Duration) {
 	if remainingMs <= 0 {
-		return minMoveTimeMs * time.Millisecond
+		return minMoveTimeMs * time.Millisecond, minMoveTimeMs * time.Millisecond
 	}
 
 	mtg := movesToGo
@@ -541,14 +562,28 @@ func allocateTime(remainingMs, incMs, movesToGo int) time.Duration {
 		mtg = assumedMovesToGo
 	}
 
+	maxUsable := remainingMs - timeSafetyBufferMs
+
 	budget := remainingMs/mtg + incMs
-	if maxUsable := remainingMs - timeSafetyBufferMs; budget > maxUsable {
+	if budget > maxUsable {
 		budget = maxUsable
 	}
 	if budget < minMoveTimeMs {
 		budget = minMoveTimeMs
 	}
-	return time.Duration(budget) * time.Millisecond
+
+	// The hard cap lets a move that needs it spend several times the target
+	// — a position where the best move keeps changing, or where the score is
+	// falling, is exactly where extra thought pays — while never touching
+	// the clock's safety buffer.
+	hardMs := budget * hardTimeMultiple
+	if hardMs > maxUsable {
+		hardMs = maxUsable
+	}
+	if hardMs < budget {
+		hardMs = budget
+	}
+	return time.Duration(budget) * time.Millisecond, time.Duration(hardMs) * time.Millisecond
 }
 
 // printInfo writes one UCI "info" line, in the same style Stockfish and
@@ -610,6 +645,31 @@ func printInfo(out io.Writer, i search.Info) {
 	}
 
 	fmt.Fprintln(out, line.String())
+}
+
+// loadNetwork loads an NNUE network for the "EvalFile" option, reporting
+// what happened as an "info string" rather than failing the command: UCI's
+// setoption has no error response, and a GUI given a mistyped path should
+// get an engine that still plays — with the embedded network — rather than
+// one that silently stops evaluating.
+//
+// An empty path returns to the embedded network, as do "<embedded>" (the
+// placeholder this engine advertises as its default) and "<empty>" (the one
+// some GUIs echo back for an unset string option).
+func loadNetwork(out io.Writer, path string) *nnue.Network {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "<embedded>" || path == "<empty>" {
+		fmt.Fprintln(out, "info string EvalFile: using the embedded network")
+		return nil
+	}
+
+	net, err := nnue.LoadFile(path)
+	if err != nil {
+		fmt.Fprintf(out, "info string EvalFile: %v; keeping the embedded network\n", err)
+		return nil
+	}
+	fmt.Fprintf(out, "info string EvalFile: loaded %s\n", path)
+	return net
 }
 
 // pieceLetter renders a piece in FEN's convention: uppercase for White,

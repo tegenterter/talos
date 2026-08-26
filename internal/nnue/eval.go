@@ -40,7 +40,13 @@ func clampHidden(v int32) int8 {
 // internal/search's call sites didn't need to change beyond the import.
 func (n *Network) Evaluate(b *board.Board) int {
 	stm := b.SideToMove
-	return n.forwardPass(n.accumulate(b, stm), n.accumulate(b, stm.Opposite()))
+	// Stack arrays, not slices from make: this runs at every leaf of the
+	// search, and heap-allocating the two accumulators here was millions of
+	// allocations a second.
+	var accSTM, accOpp [halfDimensions]int16
+	n.accumulateInto(accSTM[:], b, stm)
+	n.accumulateInto(accOpp[:], b, stm.Opposite())
+	return n.forwardPass(accSTM[:], accOpp[:])
 }
 
 // forwardPass runs the network's affine/ClippedReLU stack over two already-
@@ -54,23 +60,30 @@ func (n *Network) forwardPass(accSTM, accOpp []int16) int {
 	// trained to always see "my features, then their features" in that
 	// order, so the same weights can be reused regardless of which color
 	// is actually moving.
-	input := make([]int8, 2*halfDimensions)
-	for i, v := range accSTM {
-		input[i] = clampFT(v)
-	}
-	for i, v := range accOpp {
-		input[halfDimensions+i] = clampFT(v)
-	}
+	// Every buffer below is a stack array for the same reason as Evaluate's
+	// accumulators: this is the hot path, and none of them outlive the call.
+	//
+	// The two perspectives are fed to the first layer separately at their
+	// respective column offsets rather than concatenated into one clamped
+	// input buffer, because that layer reads accumulators directly (see
+	// forwardSparseInto). The network still sees exactly the same 512-wide
+	// input, STM-first.
+	var l1out, l2out [hiddenDim]int32
+	var h1, h2 [hiddenDim]int8
 
-	h1 := make([]int8, hiddenDim)
-	for i, v := range n.l1.forward(input) {
+	copy(l1out[:], n.l1.biases)
+	n.l1.forwardSparseInto(accSTM, 0, l1out[:])
+	n.l1.forwardSparseInto(accOpp, halfDimensions, l1out[:])
+	for i, v := range l1out {
 		h1[i] = clampHidden(v)
 	}
 
-	h2 := make([]int8, hiddenDim)
-	for i, v := range n.l2.forward(h1) {
+	n.l2.forwardInto(h1[:], l2out[:])
+	for i, v := range l2out {
 		h2[i] = clampHidden(v)
 	}
 
-	return int(n.out.forward(h2)[0]) / outputScale
+	var outv [1]int32
+	n.out.forwardInto(h2[:], outv[:])
+	return int(outv[0]) / outputScale
 }

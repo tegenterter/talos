@@ -8,7 +8,7 @@ import (
 
 func TestTTStoreProbeRoundTrip(t *testing.T) {
 	tt := newTranspositionTable(16)
-	tt.store(42, boardMoveFixture(), 137, 5, ttExact, 3)
+	tt.store(42, boardMoveFixture(), 137, 5, ttExact, 3, noEval, 0)
 
 	e, ok := tt.probe(42, 3)
 	if !ok {
@@ -28,17 +28,17 @@ func TestTTProbeMissReturnsFalse(t *testing.T) {
 
 func TestTTReplacementPrefersDeeperResults(t *testing.T) {
 	tt := newTranspositionTable(16)
-	tt.store(7, boardMoveFixture(), 100, 5, ttExact, 0)
+	tt.store(7, boardMoveFixture(), 100, 5, ttExact, 0, noEval, 0)
 
 	// A shallower result for the same position must not overwrite it.
-	tt.store(7, boardMoveFixture(), 200, 3, ttExact, 0)
+	tt.store(7, boardMoveFixture(), 200, 3, ttExact, 0, noEval, 0)
 	e, _ := tt.probe(7, 0)
 	if e.score != 100 || e.depth != 5 {
 		t.Errorf("shallower store overwrote a deeper entry: got score=%d depth=%d, want score=100 depth=5", e.score, e.depth)
 	}
 
 	// A deeper result must replace it.
-	tt.store(7, boardMoveFixture(), 300, 8, ttExact, 0)
+	tt.store(7, boardMoveFixture(), 300, 8, ttExact, 0, noEval, 0)
 	e, _ = tt.probe(7, 0)
 	if e.score != 300 || e.depth != 8 {
 		t.Errorf("deeper store did not replace the entry: got score=%d depth=%d, want score=300 depth=8", e.score, e.depth)

@@ -41,7 +41,7 @@ func TestStaticEvalPicksTheRightEvaluator(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			b := mustFEN(t, tc.fen)
-			if got, want := staticEval(&b), tc.want(&b); got != want {
+			if got, want := evalAt(&b), tc.want(&b); got != want {
 				t.Errorf("staticEval = %+d, want %+d (%s)", got, want, tc.why)
 			}
 		})
@@ -58,11 +58,28 @@ func TestStaticEvalDampsWhicheverEvaluatorAnswered(t *testing.T) {
 	} {
 		fresh := mustFEN(t, fmtFEN(fen, 0))
 		stale := mustFEN(t, fmtFEN(fen, 90))
-		f, s := staticEval(&fresh), staticEval(&stale)
+		f, s := evalAt(&fresh), evalAt(&stale)
 		if abs(s) >= abs(f) {
 			t.Errorf("%q: |staticEval| at clock 90 = %d, at clock 0 = %d; want the stale one smaller", fen, abs(s), abs(f))
 		}
 	}
+}
+
+// evalAt is staticEval on a standalone position: the search normally keeps
+// the accumulator for each ply up to date as it makes moves, so a caller
+// starting from a bare position has to seed ply 0 itself.
+func evalAt(b *board.Board) int {
+	t := standaloneThread(b)
+	return t.staticEval(b, 0)
+}
+
+// standaloneThread is a thread outside any Search call, with its ply-0
+// accumulator seeded for b — what a test needs to evaluate a bare position,
+// since the search normally maintains both as it makes moves.
+func standaloneThread(b *board.Board) *thread {
+	t := &thread{s: &searchCtx{net: nnue.DefaultNetwork}}
+	t.s.net.Refresh(&t.acc[0], b)
+	return t
 }
 
 // benchPositions for the evaluation path: a dense middlegame (what almost
@@ -99,9 +116,10 @@ func BenchmarkStaticEval(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
+		th := standaloneThread(&bd)
 		b.Run(name, func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
-				sink = staticEval(&bd)
+				sink = th.staticEval(&bd, 0)
 			}
 		})
 	}
