@@ -48,6 +48,11 @@ type ttEntry struct {
 	// one is. The move and eval stay usable regardless; only the score is
 	// gated. See scoreValidAt.
 	clock int
+	// gen is the search generation this entry was written in, for the
+	// replacement policy: an entry from an earlier search describes a
+	// position the engine may never see again, and should give way to one
+	// from the search actually running.
+	gen uint8
 }
 
 // scoreAt returns this entry's score as it applies at the given halfmove
@@ -118,6 +123,21 @@ type ttShard struct {
 type transpositionTable struct {
 	shardMask uint64
 	shards    []ttShard
+	// gen advances once per search (see Table.NewSearch), which is what
+	// makes an entry's age meaningful. Written before any thread starts and
+	// read by all of them.
+	gen uint8
+}
+
+// NewSearch advances the table's generation, marking everything already in
+// it as belonging to an earlier search. Called once per search by
+// internal/uci; entries are not cleared, only aged, since a previous
+// search's results are still correct and often still relevant — they simply
+// stop outranking fresh ones for space.
+func (t *Table) NewSearch() {
+	if t != nil && t.tt != nil {
+		t.tt.gen++
+	}
 }
 
 // approxTTEntryBytes is a rough, documented estimate of one ttEntry's
@@ -138,7 +158,6 @@ func newTranspositionTable(hashMB int) *transpositionTable {
 	if perShard < minTTEntriesPerShard {
 		perShard = minTTEntriesPerShard
 	}
-
 	shards := make([]ttShard, ttShards)
 	for i := range shards {
 		shards[i].entries = make([]ttEntry, perShard)
@@ -203,7 +222,14 @@ func (t *transpositionTable) slotFor(shard *ttShard, hash uint64) int {
 func (t *transpositionTable) probe(hash uint64, ply int) (ttEntry, bool) {
 	shard := t.shardFor(hash)
 	shard.mu.Lock()
-	e := shard.entries[t.slotFor(shard, hash)]
+	slot := t.slotFor(shard, hash)
+	e := shard.entries[slot]
+	if e.hash == hash {
+		// An entry being read is one the current search wants, whenever it
+		// was written; refreshing its generation keeps it from being aged
+		// out from under a search that is actively using it.
+		shard.entries[slot].gen = t.gen
+	}
 	shard.mu.Unlock()
 
 	if e.hash != hash {
@@ -224,7 +250,12 @@ func (t *transpositionTable) store(hash uint64, move board.Move, score, depth in
 	defer shard.mu.Unlock()
 
 	e := &shard.entries[t.slotFor(shard, hash)]
-	if e.hash == hash && e.depth > depth {
+	// Depth-preferred replacement, but only against an entry from *this*
+	// search. A deeper result from an earlier one describes a position the
+	// game has moved past, and holding a slot against the search actually
+	// running is the one thing it must not do — the gap CLAUDE.md recorded
+	// when this table had no aging at all.
+	if e.hash == hash && e.depth > depth && e.gen == t.gen {
 		return
 	}
 	// An entry being replaced by one that carries no evaluation keeps the
@@ -241,6 +272,7 @@ func (t *transpositionTable) store(hash uint64, move board.Move, score, depth in
 		flag:  flag,
 		eval:  eval,
 		clock: saturateClock(clock),
+		gen:   t.gen,
 	}
 }
 

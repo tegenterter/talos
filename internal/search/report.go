@@ -223,6 +223,8 @@ func (t *transpositionTable) hashfull() int {
 	used := 0
 	for i := 0; i < hashfullSamples; i++ {
 		shard := &t.shards[i&int(t.shardMask)]
+		// Sampled across shards and across the entries within them, which
+		// with buckets means sampling individual entries rather than slots.
 		slot := (i / len(t.shards)) % len(shard.entries)
 		shard.mu.Lock()
 		occupied := shard.entries[slot].hash != 0

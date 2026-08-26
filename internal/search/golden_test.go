@@ -83,7 +83,22 @@ func TestSearchIsDeterministic(t *testing.T) {
 // TestSearchMatchesGoldenBaselines pins the search's exact output. See the
 // file comment for what to do when it fails.
 func TestSearchMatchesGoldenBaselines(t *testing.T) {
-	// Recorded at goldenDepth, Threads: 1. Last re-recorded when continuation
+	// Recorded at goldenDepth, Threads: 1. Last re-recorded when capture
+	// history, internal iterative reduction and transposition-table aging
+	// landed (ordering.go, negamax.go, tt.go). Scores and root moves are
+	// unchanged everywhere; bench node count fell 19%. Kiwipete's count rose
+	// here while bench's fell, which is what a reordering does — it is not a
+	// uniform win position by position.
+	//
+	// Also re-recorded *without* the transposition-table bucketing that was
+	// tried in the same sitting and reverted: four-entry buckets with
+	// age-weighted replacement cost 18% more bench nodes than the existing
+	// single-entry, depth-preferred policy, and every bucket size tried
+	// (2, 3, 4, 8) was worse. Aging survived on its own, where it now means
+	// "a deeper entry from an *earlier* search no longer outranks a fresh
+	// one for its slot" — the gap CLAUDE.md had recorded.
+	//
+	// Before that, re-recorded when continuation
 	// history landed (conthistory.go) and both history tables moved onto one
 	// scale with a shared bonus and gravity update (ordering.go). Scores are
 	// unchanged everywhere; startpos needs 32% fewer nodes for the same
@@ -183,10 +198,10 @@ func TestSearchMatchesGoldenBaselines(t *testing.T) {
 		nodes, depth, scoreCP int
 		pv                    string
 	}{
-		"startpos":     {12591, 6, 45, "e2e4 c7c5 g1f3 b8c6 d2d4 c5d4"},
-		"kiwipete":     {68025, 6, -196, "e2a6 b4c3 d2c3 e6d5 e4d5"},
-		"italian":      {28077, 6, -58, "g8f6 d2d4 e5d4 e1g1 f8c5"},
-		"pawn-endgame": {8678, 6, 704, "b4f4 h4g3 f4c4 h5c5 c4c5 d6c5"},
+		"startpos":     {12590, 6, 45, "e2e4 c7c5 g1f3 b8c6 d2d4 c5d4"},
+		"kiwipete":     {71165, 6, -196, "e2a6 b4c3 d2c3 e6d5 e4d5"},
+		"italian":      {28469, 6, -58, "g8f6 d2d4 e5d4 e1g1 f8c5"},
+		"pawn-endgame": {8665, 6, 704, "b4f4 h4g3 f4c4 h5c5 c4c5 d6c5"},
 		"rook-endgame": {8210, 6, 630, "a1a7 e8d8 e1e2 d8e8 e2d3 e8d8"},
 	}
 

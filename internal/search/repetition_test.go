@@ -100,36 +100,65 @@ func TestGameHistoryIsTrimmedToTheRepeatableSpan(t *testing.T) {
 	}
 }
 
-// TestSoftTimeLimitStopsEarly checks the search declines to begin an
-// iteration it cannot finish. Because an aborted iteration is discarded
-// entirely, time spent past the last completed depth buys nothing at all —
-// the same move comes back either way — so the search should return well
-// before its hard deadline rather than burning the remainder.
+// TestSoftTimeLimitStopsEarly checks the search declines to spend a whole
+// budget on an iteration it cannot finish. Because an aborted iteration is
+// discarded entirely, time spent past the last completed depth buys nothing
+// at all — the same move comes back either way.
+//
+// It is written against the path that actually promises this: a clock-based
+// search, which gets both a target spend (SoftTime) and a ceiling (MaxTime),
+// exactly as internal/uci supplies them. A MaxTime-only search — what "go
+// movetime" is — promises only that it will not *exceed* its deadline, since
+// there the caller has asked for a duration rather than handed over a
+// budget to manage; that weaker guarantee is checked below.
+//
+// This test previously drove the MaxTime-only path and asserted the stronger
+// property, and failed three times over as the engine got faster and its
+// iteration profile changed — each failure prompting a re-tune of the
+// prediction rather than a look at what was actually being promised.
 func TestSoftTimeLimitStopsEarly(t *testing.T) {
 	b := board.StartingBoard()
 
-	const budget = 2 * time.Second
+	const soft, hard = 500 * time.Millisecond, 2 * time.Second
 	start := time.Now()
 	var last Info
 	_, ok := Search(b, Options{
-		MaxTime: budget,
-		Threads: 1,
-		OnInfo:  func(i Info) { last = i },
+		SoftTime: soft,
+		MaxTime:  hard,
+		Threads:  1,
+		OnInfo:   func(i Info) { last = i },
 	})
 	elapsed := time.Since(start)
 	if !ok {
 		t.Fatal("Search reported no legal moves")
 	}
 
-	t.Logf("returned depth %d after %v of a %v budget", last.Depth, elapsed.Round(time.Millisecond), budget)
-	if elapsed >= budget {
-		t.Errorf("search used its whole %v budget (%v); the soft limit should have stopped it "+
-			"before starting an iteration it could not finish", budget, elapsed)
+	t.Logf("returned depth %d after %v against a %v target and a %v ceiling", last.Depth, elapsed.Round(time.Millisecond), soft, hard)
+	if elapsed >= hard {
+		t.Errorf("search used its whole %v ceiling (%v); the soft budget should have stopped it starting an iteration it could not finish", hard, elapsed)
 	}
-	// Guard the other direction too: stopping early is only worth anything
-	// if the search still got real work done first.
+	// Guard the other direction: stopping early is only worth anything if
+	// the search got real work done first.
 	if last.Depth < 5 {
 		t.Errorf("search only reached depth %d in %v; the soft limit looks far too aggressive", last.Depth, elapsed)
+	}
+}
+
+// TestFixedTimeSearchRespectsItsDeadline covers the weaker guarantee the
+// MaxTime-only path does make: "go movetime" means search for this long, and
+// the hard deadline must hold whatever the iteration timing does.
+func TestFixedTimeSearchRespectsItsDeadline(t *testing.T) {
+	b := board.StartingBoard()
+
+	const budget = 300 * time.Millisecond
+	start := time.Now()
+	if _, ok := Search(b, Options{MaxTime: budget, Threads: 1}); !ok {
+		t.Fatal("Search reported no legal moves")
+	}
+	// A generous margin: the deadline is checked every few thousand nodes,
+	// and the machine may be busy. What matters is that it is checked.
+	if elapsed := time.Since(start); elapsed > budget+200*time.Millisecond {
+		t.Errorf("search took %v against a %v deadline", elapsed, budget)
 	}
 }
 

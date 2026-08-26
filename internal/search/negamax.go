@@ -133,6 +133,13 @@ type thread struct {
 	// why it is int16 rather than int.
 	contHist    continuationHistory
 	playedStack [accStackSize]playedMove
+	// excluded[ply] is the move a singular verification search at that ply
+	// is trying to do without. Zero when no such search is running.
+	excluded [accStackSize]board.Move
+	// captureHist is the capture-ordering history (ordering.go), and
+	// captureBuf[ply] the captures searched at that ply, for its malus.
+	captureHist captureHistoryTable
+	captureBuf  [accStackSize][32]board.Move
 	// quietBuf[ply] records the quiet moves searched at that ply, for the
 	// history malus applied when a later one cuts off. Bounded well below
 	// the move list's length on purpose: the moves that matter are the ones
@@ -284,6 +291,13 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 
 	hash := b.Hash()
 
+	// A singular verification search re-enters this function at the same
+	// ply with one move excluded (see singularExtension). Such a node must
+	// not read or write the transposition table for this position — the
+	// entry it would read is the very move it is trying to disprove.
+	excluded := t.excluded[ply]
+	haveExcluded := excluded != board.Move{}
+
 	// Draw detection only applies to positions reached *during* this
 	// search (ply > 0): the root itself should still be searched
 	// normally even if, say, the fifty-move counter already technically
@@ -330,9 +344,12 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 	var ttMove board.Move
 	haveTTMove := false
 	cachedEval := noEval
-	if entry, ok := t.s.tt.probe(hash, ply); ok {
+	var ttScore, ttDepth int
+	var ttFlag ttFlag
+	if entry, ok := t.s.tt.probe(hash, ply); ok && !haveExcluded {
 		ttMove, haveTTMove = entry.move, true
 		cachedEval = entry.eval
+		ttScore, ttDepth, ttFlag = entry.scoreAt(b.HalfmoveClock), entry.depth, entry.flag
 		// Same ply>0 restriction, and for the same reason, as the
 		// draw/tablebase checks above: the root always needs a move it
 		// actually searched this iteration, with a real reconstructed
@@ -421,6 +438,20 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 		improving = staticScore >= t.evalStack[ply-2]
 	}
 
+	// Internal iterative reduction: a node this deep with no transposition
+	// -table move has never been searched before, so its move ordering rests
+	// on history and SEE alone — and the first move is unlikely to be best.
+	// Searching it a ply shallower costs little (the next iteration will
+	// revisit it *with* a table move, having spent less getting there) and
+	// is worth more than it sounds, because the alternative is a full-depth
+	// search with the ordering that made this expensive in the first place.
+	//
+	// It is a reduction, not a pruning: nothing is discarded, and the
+	// shallower search still fills the table for the visit that follows.
+	if iirEnabled && !haveTTMove && depth >= iirMinDepth {
+		depth--
+	}
+
 	// Null-move pruning: if letting the opponent move twice in a row
 	// (i.e. we do nothing) still can't stop them failing to reach beta at
 	// a cheaper, reduced-depth search, our actual move can only be even
@@ -454,6 +485,16 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 		if score >= beta {
 			return score
 		}
+	}
+
+	// Singular extension test. Run *before* the move list is generated and
+	// ordered, because the verification search re-enters this ply and would
+	// otherwise overwrite the very buffers this node is about to iterate.
+	ttMoveExtension := 0
+	if singularEnabled && !haveExcluded && haveTTMove && ply > 0 &&
+		depth >= singularMinDepth && ttDepth >= depth-singularDepthMargin &&
+		ttFlag != ttUpperBound && ttScore > -mateThreshold && ttScore < mateThreshold {
+		ttMoveExtension = t.singularExtension(b, ttMove, ttScore, depth, ply, pathLen)
 	}
 
 	ordered := t.orderMoves(b, legalMoves, ttMove, haveTTMove, ply)
@@ -492,8 +533,12 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 	}
 
 	cutoff := false
-	quietCount := 0
+	quietCount, captureCount := 0, 0
 	for i, move := range ordered {
+		if haveExcluded && move == excluded {
+			continue
+		}
+
 		// "Young brothers wait": never split before the eldest sibling has
 		// been searched. Its score is what sets alpha for everyone else, so
 		// splitting before it lands would send helpers off with a window so
@@ -523,7 +568,7 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 					a := int(sp.alpha.Load())
 
 					var childPV []board.Move
-					score := helper.searchChild(b, move, i, depth, ply, a, beta, inCheck, improving, childPathLen, &childPV)
+					score := helper.searchChild(b, move, i, depth, ply, a, beta, inCheck, improving, extensionFor(move, ttMove, haveTTMove, ttMoveExtension), childPathLen, &childPV)
 					siblings[i] = siblingResult{
 						searched: true,
 						usable:   !helper.aborted && !helper.cut,
@@ -546,13 +591,18 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 			t.s.rep.currMove(move, i+1, t.selDepth)
 		}
 
-		if !isCapture(b, move) && quietCount < len(t.quietBuf[ply]) {
+		if isCapture(b, move) {
+			if captureCount < len(t.captureBuf[ply]) {
+				t.captureBuf[ply][captureCount] = move
+				captureCount++
+			}
+		} else if quietCount < len(t.quietBuf[ply]) {
 			t.quietBuf[ply][quietCount] = move
 			quietCount++
 		}
 
 		var childPV []board.Move
-		score := t.searchChild(b, move, i, depth, ply, alpha, beta, inCheck, improving, childPathLen, &childPV)
+		score := t.searchChild(b, move, i, depth, ply, alpha, beta, inCheck, improving, extensionFor(move, ttMove, haveTTMove, ttMoveExtension), childPathLen, &childPV)
 		if t.aborted || t.cut {
 			return 0
 		}
@@ -587,8 +637,10 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 			}
 		}
 		if alpha >= beta {
-			if !isCapture(b, move) {
-				bonus := historyBonus(depth)
+			bonus := historyBonus(depth)
+			if isCapture(b, move) {
+				t.updateCaptureHistory(b, move, bonus)
+			} else {
 				t.recordKiller(ply, move)
 				t.recordHistory(b.SideToMove, move, depth)
 				t.updateContHistory(b, move, ply, bonus)
@@ -597,6 +649,10 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 				// once worked and never that it since stopped working.
 				t.penalizeSearchedQuiets(b, ply, quietCount, move, depth)
 			}
+			// Captures that were tried and did not cut off are penalized
+			// whatever the cutting move was: the point is that taking there
+			// did not work, not what did.
+			t.penalizeSearchedCaptures(b, ply, captureCount, move, depth)
 			cutoff = true
 			if sp != nil {
 				// Stop helpers immediately rather than at the deferred
@@ -663,10 +719,12 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 	case bestScore >= beta:
 		flag = ttLowerBound
 	}
-	// noEval: a node searched to depth never needed a static evaluation, so
-	// there is none to cache here. store keeps whatever evaluation the entry
-	// already carried.
-	t.s.tt.store(hash, bestMove, bestScore, depth, flag, ply, noEval, b.HalfmoveClock)
+	if !haveExcluded {
+		// noEval: a node searched to depth never needed a static evaluation,
+		// so there is none to cache here. store keeps whatever evaluation
+		// the entry already carried.
+		t.s.tt.store(hash, bestMove, bestScore, depth, flag, ply, noEval, b.HalfmoveClock)
+	}
 
 	return bestScore
 }
@@ -692,6 +750,16 @@ func setTTPV(pv *[]board.Move, m board.Move) {
 // point evaluating deeper than the reductions reach.
 const evalNeededMaxDepth = 8
 
+// penalizeSearchedCaptures applies the capture-history malus to every
+// capture tried at this node before the cutoff.
+func (t *thread) penalizeSearchedCaptures(b *board.Board, ply, captureCount int, cutMove board.Move, depth int) {
+	for _, m := range t.captureBuf[ply][:captureCount] {
+		if m != cutMove {
+			t.updateCaptureHistory(b, m, -historyBonus(depth))
+		}
+	}
+}
+
 // penalizeSearchedQuiets applies the history malus — in both the plain and
 // the continuation tables — to every quiet move tried at this node before
 // the one that cut off.
@@ -703,6 +771,67 @@ func (t *thread) penalizeSearchedQuiets(b *board.Board, ply, quietCount int, cut
 		}
 	}
 }
+
+// iirMinDepth is the shallowest depth internal iterative reduction applies
+// to. Shallow nodes are cheap enough that ordering them badly costs little,
+// and reducing them risks dropping straight into quiescence.
+const iirMinDepth = 4
+
+// iirEnabled exists only so a test can measure what internal iterative
+// reduction does, like lmrEnabled; no production path sets it false.
+var iirEnabled = true
+
+// extensionFor gives the transposition-table move whatever the singular test
+// granted it, and every other move nothing.
+func extensionFor(move, ttMove board.Move, haveTTMove bool, ttMoveExtension int) int {
+	if haveTTMove && move == ttMove && ttMoveExtension > 0 {
+		return ttMoveExtension
+	}
+	return 0
+}
+
+// singularExtension asks whether the transposition-table move is the *only*
+// move that holds this position together, and returns a ply of extension if
+// it is.
+//
+// The test: search every other move at reduced depth against a window just
+// below what the table says this move is worth. If they all fail low, the
+// table move is not merely best, it is singular — nothing else comes close —
+// and the line running through it deserves to be searched deeper, because
+// that is where the game is actually decided.
+//
+// It is the most expensive heuristic in the search (a whole extra search per
+// qualifying node), which is why it is confined to deep nodes with a
+// trustworthy table entry: shallow depth, a table entry that was only an
+// upper bound, or a mate score all make the question meaningless or the
+// answer unreliable.
+func (t *thread) singularExtension(b *board.Board, ttMove board.Move, ttScore, depth, ply, pathLen int) int {
+	target := ttScore - singularMarginPerPly*depth
+
+	t.excluded[ply] = ttMove
+	var discarded []board.Move
+	score := t.negamax(b, (depth-1)/2, ply, target-1, target, &discarded, pathLen)
+	t.excluded[ply] = board.Move{}
+
+	if t.aborted || t.cut {
+		return 0
+	}
+	if score < target {
+		return 1
+	}
+	return 0
+}
+
+// Singular extension tuning. Conventional starting values.
+const (
+	singularMinDepth     = 7
+	singularDepthMargin  = 3
+	singularMarginPerPly = 2
+)
+
+// singularEnabled exists only so a test can measure what singular extensions
+// do, like lmrEnabled; no production path sets it false.
+var singularEnabled = true
 
 // splitMinDepth is the shallowest remaining depth at which a node will
 // hand siblings to helper goroutines. Splitting has real fixed costs — a
@@ -787,15 +916,15 @@ func (t *thread) releaseHelper(h *thread) { t.s.sem <- h }
 // from this node's point of view. It exists so the sequential path and the
 // helper path search a move in provably identical ways — the two differ
 // only in which thread runs this, and which alpha they were handed.
-func (t *thread) searchChild(b *board.Board, move board.Move, i, depth, ply, alpha, beta int, inCheck, improving bool, childPathLen int, childPV *[]board.Move) int {
+func (t *thread) searchChild(b *board.Board, move board.Move, i, depth, ply, alpha, beta int, inCheck, improving bool, extraExtension, childPathLen int, childPV *[]board.Move) int {
 	child := board.MakeMove(*b, move)
 	t.s.net.Update(&t.acc[ply+1], &t.acc[ply], b, move, &child)
 	t.recordPlayed(b, move, ply)
 
-	ext := 0
+	ext := extraExtension
 	childKingSq := child.Pieces[child.SideToMove][board.King].LSB()
 	givesCheck := board.IsSquareAttacked(&child, childKingSq, child.SideToMove.Opposite())
-	if givesCheck {
+	if givesCheck && ext == 0 {
 		ext = 1 // check extension: don't let a checking move hit the horizon at depth 0
 	}
 	newDepth := depth - 1 + ext

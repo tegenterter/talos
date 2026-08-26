@@ -182,6 +182,10 @@ func run(in io.Reader, rawOut io.Writer) {
 			if tt == nil {
 				tt = search.NewTable(hashMB)
 			}
+			// Age everything already in the table: it belongs to the search
+			// for a previous move, and should give way to this one's results
+			// rather than hold slots against them.
+			tt.NewSearch()
 
 			opts.Context = ctx
 			opts.Infinite = infinite || ponder

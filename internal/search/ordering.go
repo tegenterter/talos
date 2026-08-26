@@ -146,9 +146,15 @@ func (t *thread) moveOrderScore(b *board.Board, m board.Move, ttMove board.Move,
 		return orderScoreTTMove
 	}
 	if isCapture(b, m) {
+		// SEE decides which band a capture lands in — winning or losing —
+		// and capture history orders within it. SEE answers "does this
+		// exchange win material", which is the first question and a static
+		// one; capture history answers "has taking this piece with that
+		// piece, on that square, actually been working", which SEE cannot
+		// see and which separates captures it scores identically.
 		s := see(b, m)
 		if s >= 0 {
-			return orderScoreGoodCapture + s
+			return orderScoreGoodCapture + s + t.captureHistoryScore(b, m)/captureHistoryDivisor
 		}
 		return orderScoreBadCapture + s
 	}
@@ -280,4 +286,55 @@ func abs(v int) int {
 		return -v
 	}
 	return v
+}
+
+// Capture history: how well capturing a given piece with a given piece, on
+// a given square, has actually worked.
+//
+// It sits underneath SEE rather than replacing it. SEE is static and exact
+// about material; this is empirical and about everything else — a capture
+// that wins a pawn but walks into a bind scores the same as one that wins a
+// pawn cleanly, until the search has been burnt by it a few times.
+//
+// Indexed by (moving piece, destination, captured piece type), which is the
+// smallest key that distinguishes the cases that matter.
+type captureHistoryTable [pieceIndexCount][64][6]int
+
+// captureHistoryDivisor scales the table into the space between two SEE
+// values, so capture history reorders captures SEE rates equally without
+// ever reordering ones it does not.
+const captureHistoryDivisor = 16
+
+func (t *thread) captureHistoryScore(b *board.Board, m board.Move) int {
+	idx, captured, ok := captureKey(b, m)
+	if !ok {
+		return 0
+	}
+	return t.captureHist[idx][m.To][captured]
+}
+
+func (t *thread) updateCaptureHistory(b *board.Board, m board.Move, bonus int) {
+	idx, captured, ok := captureKey(b, m)
+	if !ok {
+		return
+	}
+	applyHistory(&t.captureHist[idx][m.To][captured], bonus)
+}
+
+// captureKey builds the table index for a capture, reporting false for a
+// move that captures nothing (an en passant capture takes a pawn, but from a
+// square other than the destination, so it is keyed as a pawn capture).
+func captureKey(b *board.Board, m board.Move) (idx int, captured int, ok bool) {
+	_, pt, found := b.PieceAt(m.From)
+	if !found {
+		return 0, 0, false
+	}
+	if m.Flag == board.EnPassantCapture {
+		return pieceIndex(b.SideToMove, pt), int(board.Pawn), true
+	}
+	_, capturedPt, occupied := b.PieceAt(m.To)
+	if !occupied {
+		return 0, 0, false
+	}
+	return pieceIndex(b.SideToMove, pt), int(capturedPt), true
 }
