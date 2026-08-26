@@ -37,13 +37,26 @@ var goldenPositions = []struct {
 	{"italian", "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 0 1"},
 	{"pawn-endgame", "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1"},
 	{"rook-endgame", "4k3/8/8/8/8/8/8/R3K3 w Q - 0 1"},
+	// A forced mate, which the other five deliberately are not. (The FEN is
+	// mdp_test.go's, named for the mate it guarantees at worst; the search
+	// finds a faster one, which is why the baseline records mate 2.) Without
+	// it the baselines cannot see mate distance pruning at all — a hole
+	// TestGoldenDepthExercisesEveryHeuristic found the moment it was
+	// written, and the same class of hole that hid singular extensions.
+	{"mate-in-three", mateInThreeFEN},
 }
 
-const goldenDepth = 6
+// goldenDepth has to be deep enough that every heuristic in the search
+// actually fires at it, or the baselines cannot see changes to the ones that
+// do not. That is not hypothetical: at depth 6 singular extensions were
+// invisible here — they start at singularMinDepth, which is 7 — so the
+// regression net had a hole exactly where the newest code lived.
+// TestGoldenDepthExercisesEveryHeuristic keeps it honest.
+const goldenDepth = 8
 
 // runGolden searches one position under fully-pinned, deterministic
 // settings and returns the observable result.
-func runGolden(t *testing.T, fen string) (nodes, depth, scoreCP int, pv string) {
+func runGolden(t *testing.T, fen string) (nodes, depth, scoreCP, mate int, pv string) {
 	t.Helper()
 	b := mustFEN(t, fen)
 
@@ -64,16 +77,20 @@ func runGolden(t *testing.T, fen string) (nodes, depth, scoreCP int, pv string) 
 	for i, m := range last.PV {
 		moves[i] = m.String()
 	}
-	return last.Nodes, last.Depth, last.ScoreCP, strings.Join(moves, " ")
+	// Mate is reported alongside ScoreCP, not folded into it: a forced mate
+	// carries its distance in Info.Mate and leaves ScoreCP at zero, so a
+	// baseline pinning only ScoreCP would not notice a mate turning into a
+	// quiet zero.
+	return last.Nodes, last.Depth, last.ScoreCP, last.Mate, strings.Join(moves, " ")
 }
 
 // TestSearchIsDeterministic is the precondition for every other golden test:
 // without it, the recorded baselines below would be noise.
 func TestSearchIsDeterministic(t *testing.T) {
 	for _, p := range goldenPositions {
-		n1, d1, s1, pv1 := runGolden(t, p.fen)
-		n2, d2, s2, pv2 := runGolden(t, p.fen)
-		if n1 != n2 || d1 != d2 || s1 != s2 || pv1 != pv2 {
+		n1, d1, s1, m1, pv1 := runGolden(t, p.fen)
+		n2, d2, s2, m2, pv2 := runGolden(t, p.fen)
+		if n1 != n2 || d1 != d2 || s1 != s2 || m1 != m2 || pv1 != pv2 {
 			t.Errorf("%s: search is not deterministic across runs:\n  run 1: nodes=%d depth=%d score=%d pv=%q\n  run 2: nodes=%d depth=%d score=%d pv=%q",
 				p.name, n1, d1, s1, pv1, n2, d2, s2, pv2)
 		}
@@ -83,7 +100,14 @@ func TestSearchIsDeterministic(t *testing.T) {
 // TestSearchMatchesGoldenBaselines pins the search's exact output. See the
 // file comment for what to do when it fails.
 func TestSearchMatchesGoldenBaselines(t *testing.T) {
-	// Recorded at goldenDepth, Threads: 1. Last re-recorded when capture
+	// Recorded at goldenDepth, Threads: 1. Last re-recorded when goldenDepth
+	// went from 6 to 8, because at 6 these baselines could not see singular
+	// extensions at all — they start at depth 7, so the regression net had a
+	// hole exactly where the newest code lived. See
+	// TestGoldenDepthExercisesEveryHeuristic, which now fails if any
+	// heuristic becomes invisible here again.
+	//
+	// Before that, re-recorded when capture
 	// history, internal iterative reduction and transposition-table aging
 	// landed (ordering.go, negamax.go, tt.go). Scores and root moves are
 	// unchanged everywhere; bench node count fell 19%. Kiwipete's count rose
@@ -195,14 +219,15 @@ func TestSearchMatchesGoldenBaselines(t *testing.T) {
 	// purpose — see TestPVSNodeEffectScalesWithDepth for why depth 6
 	// flatters PVS least.
 	golden := map[string]struct {
-		nodes, depth, scoreCP int
-		pv                    string
+		nodes, depth, scoreCP, mate int
+		pv                          string
 	}{
-		"startpos":     {12590, 6, 45, "e2e4 c7c5 g1f3 b8c6 d2d4 c5d4"},
-		"kiwipete":     {71165, 6, -196, "e2a6 b4c3 d2c3 e6d5 e4d5"},
-		"italian":      {28469, 6, -58, "g8f6 d2d4 e5d4 e1g1 f8c5"},
-		"pawn-endgame": {8665, 6, 704, "b4f4 h4g3 f4c4 h5c5 c4c5 d6c5"},
-		"rook-endgame": {8210, 6, 630, "a1a7 e8d8 e1e2 d8e8 e2d3 e8d8"},
+		"startpos":      {95239, 8, 49, 0, "e2e4 c7c5 g1f3 e7e6 d2d4 c5d4 f3d4 g8f6 b1c3 a7a6"},
+		"kiwipete":      {331436, 8, -156, 0, "e2a6 b4c3 d2c3"},
+		"italian":       {128617, 8, -36, 0, "g8f6 d2d3 f8c5 e1g1 d7d6 c2c3 c5b6 b2b4"},
+		"pawn-endgame":  {97972, 8, 280, 0, "b4f4 h4g3 f4f3 g3g2 a5a6 h5c5 f3f8 g2g3 f8f7 g3g4 f7g7 g4h4"},
+		"rook-endgame":  {28551, 8, 633, 0, "a1a7 e8d8 e1e2 d8e8 e2d3 e8d8 d3e4 d8e8"},
+		"mate-in-three": {21244, 8, 0, 2, "d1d7 g7g6 b2g7"},
 	}
 
 	for _, p := range goldenPositions {
@@ -210,10 +235,66 @@ func TestSearchMatchesGoldenBaselines(t *testing.T) {
 		if !ok {
 			t.Fatalf("no golden recorded for %s", p.name)
 		}
-		nodes, depth, scoreCP, pv := runGolden(t, p.fen)
-		if nodes != want.nodes || depth != want.depth || scoreCP != want.scoreCP || pv != want.pv {
-			t.Errorf("%s changed:\n  got:  nodes=%d depth=%d score=%d pv=%q\n  want: nodes=%d depth=%d score=%d pv=%q",
-				p.name, nodes, depth, scoreCP, pv, want.nodes, want.depth, want.scoreCP, want.pv)
+		nodes, depth, scoreCP, mate, pv := runGolden(t, p.fen)
+		if nodes != want.nodes || depth != want.depth || scoreCP != want.scoreCP || mate != want.mate || pv != want.pv {
+			t.Errorf("%s changed:\n  got:  nodes=%d depth=%d score=%d mate=%d pv=%q\n  want: nodes=%d depth=%d score=%d mate=%d pv=%q",
+				p.name, nodes, depth, scoreCP, mate, pv, want.nodes, want.depth, want.scoreCP, want.mate, want.pv)
 		}
+	}
+}
+
+// TestGoldenDepthExercisesEveryHeuristic checks that the baselines above can
+// actually see each part of the search: flipping any one heuristic off must
+// change what they record.
+//
+// This exists because of a hole it would have caught. Singular extensions
+// start at depth 7 and the golden positions were pinned at depth 6, so they
+// were completely blind to the newest and most intricate code in the search
+// — a refactor could have broken it outright and every test would still have
+// passed. A regression anchor that cannot see a feature is not protecting
+// it, and the only way to know is to check.
+//
+// One position is enough per heuristic, and the first one that reacts ends
+// the search for that heuristic, so this stays cheap despite running at
+// goldenDepth.
+func TestGoldenDepthExercisesEveryHeuristic(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs several searches at goldenDepth")
+	}
+
+	heuristics := []struct {
+		name string
+		flag *bool
+	}{
+		{"late move reductions", &lmrEnabled},
+		{"principal variation search", &pvsEnabled},
+		{"mate distance pruning", &mdpEnabled},
+		{"quiescence delta pruning", &deltaPruningEnabled},
+		{"aspiration windows", &aspirationEnabled},
+		{"internal iterative reduction", &iirEnabled},
+		{"singular extensions", &singularEnabled},
+	}
+
+	baseline := make(map[string][4]interface{}, len(goldenPositions))
+	for _, p := range goldenPositions {
+		nodes, _, score, mate, pv := runGolden(t, p.fen)
+		baseline[p.name] = [4]interface{}{nodes, score, mate, pv}
+	}
+
+	for _, h := range heuristics {
+		t.Run(h.name, func(t *testing.T) {
+			*h.flag = false
+			defer func() { *h.flag = true }()
+
+			for _, p := range goldenPositions {
+				nodes, _, score, mate, pv := runGolden(t, p.fen)
+				if [4]interface{}{nodes, score, mate, pv} != baseline[p.name] {
+					return // this position reacts; the baselines can see it
+				}
+			}
+			t.Errorf("turning off %s changed none of the golden positions at depth %d: "+
+				"the baselines are blind to it, and a regression in it would go unnoticed",
+				h.name, goldenDepth)
+		})
 	}
 }
