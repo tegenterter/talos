@@ -3,6 +3,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"talos/internal/datagen"
@@ -26,6 +27,17 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "datagen" {
 		if err := runDatagen(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "datagen:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	// "talos pack" converts generated training data into the fixed-size
+	// binary records a trainer memory-maps. Separate from datagen so the
+	// text dump stays the archival artifact and packing can be redone
+	// whenever the feature set changes.
+	if len(os.Args) > 1 && os.Args[1] == "pack" {
+		if err := runPack(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "pack:", err)
 			os.Exit(1)
 		}
 		return
@@ -64,4 +76,43 @@ func runDatagen(args []string) error {
 	opts.Log = os.Stderr
 
 	return datagen.Run(opts)
+}
+
+// runPack parses the flags for "talos pack" and runs it.
+func runPack(args []string) error {
+	fs := flag.NewFlagSet("pack", flag.ContinueOnError)
+	in := fs.String("in", "", "training data to read (default: stdin)")
+	out := fs.String("out", "", "packed records to write (default: stdout)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	src := io.Reader(os.Stdin)
+	if *in != "" {
+		f, err := os.Open(*in)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		src = f
+	}
+
+	dst := io.Writer(os.Stdout)
+	if *out != "" {
+		f, err := os.Create(*out)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		dst = f
+	}
+
+	n, err := datagen.Pack(src, dst)
+	if err != nil {
+		return err
+	}
+	// Progress to stderr so it never contaminates the data when output is a
+	// pipe, matching datagen.
+	fmt.Fprintf(os.Stderr, "packed %d positions (%d bytes each)\n", n, datagen.RecordSize)
+	return nil
 }

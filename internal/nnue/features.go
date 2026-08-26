@@ -86,3 +86,42 @@ func (n *Network) accumulateInto(acc []int16, b *board.Board, perspective board.
 		}
 	}
 }
+
+// MaxActiveFeatures is the most HalfKP features a legal position can have
+// active per perspective: 30, being 32 pieces less the two kings, which are
+// not features (a king selects which block the others occupy).
+const MaxActiveFeatures = 30
+
+// FeaturePadding is a feature index that never occurs, for callers packing
+// variable-length feature lists into fixed-size records. Index 0 is
+// unreachable because the smallest slot in psOwn is 1, so zero can mean
+// "no feature" without ambiguity — which also lets a trainer use it directly
+// as an embedding padding index.
+const FeaturePadding = 0
+
+// ActiveFeatures appends the HalfKP feature indices active for perspective in
+// b, and returns the extended slice. The indices are exactly those
+// accumulateInto sums weight rows for, in the same order.
+//
+// It exists so training data can carry the features the *engine* computes
+// rather than features a trainer computed independently. A feature-index
+// mismatch between the two is the classic silent failure of an NNUE training
+// pipeline: everything trains, loads and runs, and the network merely plays
+// badly, with nothing to point at. Sharing this function removes the
+// possibility rather than testing for it — and TestActiveFeaturesMatch
+// Accumulator checks the two have not drifted apart regardless.
+func ActiveFeatures(dst []uint16, b *board.Board, perspective board.Color) []uint16 {
+	orientedKingSq := orient(perspective, b.Pieces[perspective][board.King].LSB())
+
+	for _, pieceColor := range [2]board.Color{board.White, board.Black} {
+		for pt := board.Pawn; pt <= board.Queen; pt++ {
+			bb := b.Pieces[pieceColor][pt]
+			for bb != 0 {
+				sq := bb.LSB()
+				bb &= bb - 1
+				dst = append(dst, uint16(featureIndex(perspective, orientedKingSq, pieceColor, pt, sq)))
+			}
+		}
+	}
+	return dst
+}

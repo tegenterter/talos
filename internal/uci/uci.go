@@ -149,7 +149,7 @@ func run(in io.Reader, rawOut io.Writer) {
 			// breakdown of the static evaluation of the current position,
 			// printed as plain text. No GUI sends this, so it can't disturb
 			// the protocol; it's for inspecting what the network thinks.
-			printEval(out, &b)
+			printEval(out, &b, net)
 		case "bench":
 			// Non-standard, like "eval" above and like Stockfish's own
 			// "bench": a fixed-position, fixed-depth search whose total node
@@ -694,8 +694,16 @@ func pieceLetter(c board.Color, pt board.PieceType) string {
 // Every score is from the side to move's perspective, matching
 // nnue.Evaluate's convention, so a positive contribution always means "this
 // piece helps whoever is to move" regardless of which side owns it.
-func printEval(out io.Writer, b *board.Board) {
-	e := nnue.Explain(b)
+func printEval(out io.Writer, b *board.Board, net *nnue.Network) {
+	// The network the *engine* would play this position with, not whichever
+	// one happens to be embedded: "eval" reported the built-in network even
+	// after "setoption name EvalFile" loaded another, which is exactly
+	// backwards for a command whose whole purpose is inspecting what the
+	// network thinks. nil means no EvalFile was given.
+	if net == nil {
+		net = nnue.DefaultNetwork
+	}
+	e := net.Explain(b)
 
 	mover := "White"
 	if b.SideToMove == board.Black {
