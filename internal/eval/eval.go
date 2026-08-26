@@ -50,9 +50,28 @@ const lopsidedMargin = 400
 // which is exactly the kind of dynamic judgement this evaluator does not
 // have and the network does; and a position where the losing side still has
 // pawns is a position the network has seen thousands of in training.
-// Lopsided is called at every leaf of the search, so it counts each side's
-// material exactly once and answers from that.
+// Lopsided is called at every leaf of the search, so it answers the common
+// case in two loads before counting anything: this regime is defined by a
+// pawnless weaker side, so a position where both sides still have pawns —
+// which is most of a game, and the overwhelming majority of nodes — cannot
+// be in it.
+//
+// Worth being honest about the payoff: this was written expecting to
+// recover the ~2% of nps that arrived with the evaluator switch, and it
+// does not, because there was never 2% here to recover. Timed directly
+// (internal/search's BenchmarkStaticEvalDispatch), everything staticEval
+// adds around the network call — this check, InsufficientMaterial, and the
+// damping together — costs 1.5ns per middlegame leaf against roughly
+// 9,900ns for the network itself, which is 0.015%. The bench nps
+// difference is the search finding a differently-shaped tree (node counts
+// moved 1.4% at the same time), not a slower evaluation path. The early
+// out is kept because it is strictly less work for the same answer, not
+// because it was shown to buy anything.
 func Lopsided(b *board.Board) bool {
+	if b.Pieces[board.White][board.Pawn] != 0 && b.Pieces[board.Black][board.Pawn] != 0 {
+		return false
+	}
+
 	white, black := material(b, board.White), material(b, board.Black)
 
 	weak, diff := board.Black, white-black
