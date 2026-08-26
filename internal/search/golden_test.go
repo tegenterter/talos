@@ -83,7 +83,27 @@ func TestSearchIsDeterministic(t *testing.T) {
 // TestSearchMatchesGoldenBaselines pins the search's exact output. See the
 // file comment for what to do when it fails.
 func TestSearchMatchesGoldenBaselines(t *testing.T) {
-	// Recorded at goldenDepth, Threads: 1. Last re-recorded when promotions
+	// Recorded at goldenDepth, Threads: 1. Last re-recorded when the
+	// fifty-move clock started damping the static evaluation and lopsided
+	// endgames started using internal/eval instead of the network (see
+	// evaluate.go). Both were expected to move these numbers, and both
+	// moved them in the direction they were meant to:
+	//
+	//   - The four positions with material still on the board kept their
+	//     scores exactly and shifted node counts by a few percent. Damping
+	//     scales every leaf, and a leaf's clock is small this close to the
+	//     root, so the effect is a small reordering rather than a
+	//     re-evaluation.
+	//   - rook-endgame (KR vs K) changed completely, which is the point:
+	//     the network scored a bare rook ending at +1606, nearly three
+	//     rooks' worth of confidence in a position worth one, and its PV
+	//     shuffled the king. The classical evaluator scores it +630 —
+	//     material plus a mating net — and the new PV starts a1a7, cutting
+	//     the defending king off on the back rank, which is how the ending
+	//     is actually won. Node count more than halved because a gradient
+	//     the search can follow prunes far better than a plateau.
+	//
+	// Before that, re-recorded when promotions
 	// got their own move-ordering band and history gained a hard clamp
 	// (ordering.go): only kiwipete moved, and only its node count and PV
 	// tail — its score and root move are unchanged. Kiwipete has a black
@@ -127,11 +147,11 @@ func TestSearchMatchesGoldenBaselines(t *testing.T) {
 		nodes, depth, scoreCP int
 		pv                    string
 	}{
-		"startpos":     {20110, 6, 45, "e2e4 c7c5 g1f3 b8c6 d2d4"},
-		"kiwipete":     {68455, 6, -196, "e2a6 b4c3 d2c3 e6d5 e4d5"},
-		"italian":      {29522, 6, -58, "g8f6 d2d4 e5d4 e1g1 f8c5 e4e5"},
-		"pawn-endgame": {9200, 6, 704, "b4f4 h4g3 f4c4 h5c5"},
-		"rook-endgame": {21500, 6, 1606, "e1e2 e8d7 a1a3 d7d6 a3g3"},
+		"startpos":     {19366, 6, 45, "e2e4 c7c5 g1f3 b8c6 d2d4"},
+		"kiwipete":     {68111, 6, -196, "e2a6 b4c3 d2c3 e6d5 e4d5"},
+		"italian":      {29818, 6, -58, "g8f6 d2d4 e5d4 e1g1 f8c5 e4e5"},
+		"pawn-endgame": {9281, 6, 704, "b4f4 h4g3 f4c4 h5c5"},
+		"rook-endgame": {10970, 6, 630, "a1a7 e8d8 e1e2 d8e8 e2d3 e8d8"},
 	}
 
 	for _, p := range goldenPositions {

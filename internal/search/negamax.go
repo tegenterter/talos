@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"talos/internal/board"
-	"talos/internal/nnue"
 	"talos/internal/tablebase"
 )
 
@@ -199,7 +198,7 @@ func (t *thread) negamax(b *board.Board, depth, ply int, alpha, beta int, pv *[]
 		t.selDepth = ply
 	}
 	if ply >= maxPly {
-		return nnue.Evaluate(b)
+		return staticEval(b)
 	}
 
 	// Mate distance pruning: a mate can never be reported faster than ply

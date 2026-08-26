@@ -107,5 +107,42 @@ func ParseFEN(fen string) (Board, error) {
 		}
 	}
 
+	if err := validate(&b, fen); err != nil {
+		return Board{}, err
+	}
+
 	return b, nil
+}
+
+// validate rejects the two illegal positions that a FEN can express and
+// that the rest of this package has no defence against, because every
+// position it produces itself is legal by construction.
+//
+// Neither check is about being strict for its own sake. A board missing a
+// king crashes anything that looks one up (nnue.Evaluate indexes its
+// feature table by king square, and an empty king bitboard yields square
+// 64, past the end of the table). A board where the side *not* to move is
+// already in check is worse than it sounds: the side to move can simply
+// capture that king, and GenerateLegalMoves — which asks only whether the
+// mover's own king is left attacked — will happily call that legal, so the
+// resulting board has no king on it either. Both arrive the same way, from
+// a GUI or a script sending "position fen" with a hand-written position,
+// and a crash there costs a game.
+func validate(b *Board, fen string) error {
+	for _, c := range [2]Color{White, Black} {
+		if n := b.Pieces[c][King].Count(); n != 1 {
+			name := "white"
+			if c == Black {
+				name = "black"
+			}
+			return fmt.Errorf("invalid FEN %q: %s has %d kings, want exactly 1", fen, name, n)
+		}
+	}
+
+	waiting := b.SideToMove.Opposite()
+	if IsSquareAttacked(b, b.Pieces[waiting][King].LSB(), b.SideToMove) {
+		return fmt.Errorf("invalid FEN %q: side not to move is in check", fen)
+	}
+
+	return nil
 }

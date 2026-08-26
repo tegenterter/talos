@@ -4,7 +4,6 @@ import (
 	"sort"
 
 	"talos/internal/board"
-	"talos/internal/nnue"
 )
 
 // maxQuiescencePly caps how much further quiescence can recurse beyond
@@ -72,7 +71,7 @@ var deltaPruningEnabled = true
 // plain static evaluation at an arbitrary cutoff depth is prone to the
 // "horizon effect" (e.g. stopping right after a queen trade but before
 // the recapture, evaluating a position that's about to lose a queen as
-// fine) — so instead of returning nnue.Evaluate directly, this keeps
+// fine) — so instead of returning a static evaluation directly, this keeps
 // playing out captures (and, if in check, every legal reply, since
 // nothing is "quiet" while in check) until the position settles down.
 // ply is the overall ply from the search root (for mate scoring); qply
@@ -108,12 +107,12 @@ func (t *thread) quiescence(b *board.Board, ply, qply, alpha, beta int) int {
 	inCheck := board.IsSquareAttacked(b, kingSq, b.SideToMove.Opposite())
 
 	if qply > maxQuiescencePly {
-		return nnue.Evaluate(b)
+		return staticEval(b)
 	}
 
 	standPat := 0
 	if !inCheck {
-		standPat = nnue.Evaluate(b)
+		standPat = staticEval(b)
 		if standPat >= beta {
 			return standPat
 		}

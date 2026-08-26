@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"talos/internal/board"
+	"talos/internal/eval"
 	"talos/internal/nnue"
 	"talos/internal/search"
 	"talos/internal/tablebase"
@@ -638,6 +639,16 @@ func printEval(out io.Writer, b *board.Board) {
 	}
 
 	fmt.Fprintf(out, "NNUE evaluation: %+d cp (%s to move)\n", e.TotalCP, mover)
+	if eval.Lopsided(b) {
+		// The search would not use this number here (see internal/eval):
+		// the network is measurably unreliable in a won endgame, which is
+		// exactly the kind of position someone types "eval" at. Print the
+		// breakdown anyway — it is still what the network thinks — but do
+		// not let it be mistaken for what the engine is playing on.
+		fmt.Fprintf(out, "Note: this is a lopsided endgame, where the search uses the classical\n")
+		fmt.Fprintf(out, "      evaluator instead (%+d cp) — the breakdown below is the network's view.\n",
+			eval.Evaluate(b))
+	}
 	fmt.Fprintln(out, "Per-piece contribution, from the side to move's perspective:")
 	fmt.Fprintln(out)
 	for _, c := range e.Contributions {
